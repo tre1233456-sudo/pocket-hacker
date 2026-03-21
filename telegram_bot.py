@@ -22,6 +22,9 @@ from tools import (
     morse_encode, morse_decode, generate_hashes, identify_hash,
     resolve_dns, ip_lookup, check_headers, search_cve,
     subnet_calc, get_ports_table, port_info,
+    phone_lookup, email_osint, username_search, domain_recon,
+    web_scan, dir_scan, whois_lookup, shodan_search, ssl_check,
+    crawl_links,
 )
 from db import Database
 
@@ -67,6 +70,16 @@ class TelegramBot:
             ("ports", self.cmd_ports),
             ("subnet", self.cmd_subnet),
             ("cve", self.cmd_cve),
+            ("phone", self.cmd_phone),
+            ("email", self.cmd_email),
+            ("user", self.cmd_user),
+            ("recon", self.cmd_recon),
+            ("webscan", self.cmd_webscan),
+            ("dirscan", self.cmd_dirscan),
+            ("whois", self.cmd_whois),
+            ("shodan", self.cmd_shodan),
+            ("ssl", self.cmd_ssl),
+            ("crawl", self.cmd_crawl),
             ("tool", self.cmd_tool),
             ("scan", self.cmd_scan),
             ("privesc", self.cmd_privesc),
@@ -125,43 +138,50 @@ class TelegramBot:
         """Start the bot"""
         if not self._auth(update.effective_user.id):
             return
-        text = """🔓 <b>POCKET HACKER</b> — Kali Linux AI in Your Pocket
+        text = """🔓 <b>POCKET HACKER</b> — Your Pocket Kali Linux
 
-Your ethical hacking assistant is ready. Ask me anything about:
+<b>🔍 OSINT (Real Lookups):</b>
+/phone [number] — Phone number OSINT
+/email [addr] — Email breach check + OSINT
+/user [name] — Username search across 20+ sites
+/recon [domain] — Full domain reconnaissance
+/whois [domain] — WHOIS lookup
+/shodan [ip/domain] — Shodan recon (open ports, vulns)
+/crawl [url] — Crawl page for links, emails, data
 
-⚔️ <b>Pentesting</b> — methodology, tools, techniques
-🌐 <b>Web Security</b> — OWASP Top 10, SQLi, XSS, SSRF
-🔑 <b>Passwords</b> — cracking, hash analysis, wordlists
-🖥️ <b>Networks</b> — scanning, enumeration, exploitation
-📡 <b>Wireless</b> — WiFi, Bluetooth, RF
-🔧 <b>Reverse Engineering</b> — binary analysis, debugging
-🏴 <b>CTF Challenges</b> — crypto, pwn, web, forensics
-🐛 <b>Bug Bounty</b> — methodology, reporting, tips
+<b>🛡️ Web Scanning (Real Scans):</b>
+/webscan [url] — Vulnerability scan (headers, PII, secrets, cookies)
+/dirscan [url] — Directory/file brute force (60+ paths)
+/headers [url] — Security header analysis
+/ssl [domain] — SSL/TLS certificate check
+/cve [search] — CVE database search
 
-<b>Built-in Tools:</b>
-/encode /decode — Base64, Hex, URL encoding
-/hash — Generate MD5/SHA1/SHA256/SHA512
-/hashid — Identify hash type
+<b>🔐 Crypto/Encoding:</b>
+/encode /decode — Base64, Hex, URL, Binary
+/hash [text] — Generate all hashes
+/hashid [hash] — Identify hash type
 /rot13 /binary /morse — Ciphers
-/ip — IP/domain geolocation lookup
-/dns — DNS resolution
-/headers — HTTP security header check
-/ports — Common port reference
-/subnet — Subnet calculator
-/cve — Search CVE database
 
-<b>AI Commands:</b>
+<b>🌐 Network:</b>
+/ip [target] — IP geolocation
+/dns [domain] — DNS resolution
+/ports [num] — Port reference
+/subnet [CIDR] — Subnet calculator
+
+<b>🤖 AI Hacking Assistant:</b>
 /tool [name] — Cheat sheet for any tool
-/scan [target] — Recon methodology
-/privesc [linux/windows] — PrivEsc checklist
+/scan [target] — Full recon methodology
+/privesc [os] — Privilege escalation guide
 /shells [type] — Reverse shell cheat sheet
 /ctf [challenge] — CTF solving help
-/payload [type] — Testing guidance
-/note [text] — Save a note
-/notes — View saved notes
-/clear — Clear chat history
+/payload [type] — Exploit/payload guidance
 
-Or just type anything — I'm your hacking AI assistant 🧠"""
+<b>📝 Other:</b>
+/note /notes — Save & view notes
+/clear — Clear chat history
+/whoami — Your info
+
+Or just type anything — full AI hacking chat 🧠"""
         await self._send(update, text)
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,6 +427,263 @@ Or just type anything — I'm your hacking AI assistant 🧠"""
         result = await search_cve(args)
         text = f"🛡️ <b>CVE SEARCH:</b> {esc(args)}\n\n{esc(result)}"
         await self._send(update, text)
+
+    # ── OSINT Commands ──
+
+    async def cmd_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Phone number OSINT lookup"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /phone [number]\nExample: /phone +15551234567")
+            return
+        await update.message.reply_text("📱 Running phone OSINT...")
+        result = await phone_lookup(args)
+        # Also get AI analysis
+        ai = await self.ai.chat(f"I ran a phone OSINT lookup on {args}. Results: {json.dumps(result, default=str)}. Analyze this and tell me what you can infer. Also suggest additional OSINT techniques I could use to find more info on this number.")
+        lines = [f"📱 <b>PHONE OSINT:</b> {esc(args)}\n"]
+        for k, v in result.items():
+            if k != "phone" and v:
+                lines.append(f"<b>{esc(k)}:</b> {esc(str(v)[:200])}")
+        lines.append(f"\n🤖 <b>AI Analysis:</b>\n{esc(ai)}")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Email OSINT + breach check"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /email [address]\nChecks breaches, validates domain, etc.")
+            return
+        await update.message.reply_text("📧 Running email OSINT...")
+        result = await email_osint(args)
+        lines = [f"📧 <b>EMAIL OSINT:</b> {esc(args)}\n"]
+        if result.get("breaches_found", 0) > 0:
+            lines.append(f"🔴 <b>BREACHED!</b> Found in {result['breaches_found']} breach(es):\n")
+            for b in result.get("breached_sites", []):
+                data = ", ".join(b.get("data_exposed", [])[:5])
+                lines.append(f"  • <b>{esc(b['name'])}</b> ({b['date']}) — {esc(data)}")
+        else:
+            lines.append("🟢 No known breaches found")
+        if result.get("domain_valid") is not None:
+            lines.append(f"\n<b>Domain valid:</b> {'Yes' if result['domain_valid'] else 'No'}")
+        if result.get("domain"):
+            lines.append(f"<b>Domain:</b> {esc(result['domain'])}")
+        if result.get("pastes_found", 0) > 0:
+            lines.append(f"📋 Found in {result['pastes_found']} paste(s)")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Username search across platforms"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /user [username]\nSearches 20+ platforms")
+            return
+        await update.message.reply_text(f"🔍 Searching for '{args}' across platforms...")
+        result = await username_search(args)
+        found = result.get("found", {})
+        lines = [f"👤 <b>USERNAME SEARCH:</b> {esc(args)}\n"]
+        if found:
+            lines.append(f"✅ <b>Found on {len(found)} platform(s):</b>\n")
+            for platform, url in found.items():
+                lines.append(f"  • <b>{esc(platform)}:</b> {esc(url)}")
+        else:
+            lines.append("❌ Not found on any checked platforms")
+        lines.append(f"\n📊 Checked {len(found) + len(result.get('not_found', []))} platforms total")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_recon(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Full domain reconnaissance"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /recon [domain]\nExample: /recon example.com")
+            return
+        await update.message.reply_text(f"🎯 Running full recon on {args}...")
+        result = await domain_recon(args)
+        lines = [f"🎯 <b>DOMAIN RECON:</b> {esc(args)}\n"]
+        if result.get("ips"):
+            lines.append(f"<b>IPs:</b> {', '.join(result['ips'])}")
+        if result.get("server"):
+            lines.append(f"<b>Server:</b> {esc(result['server'])}")
+        if result.get("powered_by") and result['powered_by'] != '?':
+            lines.append(f"<b>Powered By:</b> {esc(result['powered_by'])}")
+        if result.get("technologies"):
+            lines.append(f"<b>Tech Stack:</b> {', '.join(result['technologies'])}")
+        if result.get("hosting"):
+            h = result["hosting"]
+            lines.append(f"<b>Hosting:</b> {esc(h.get('org', '?'))} ({esc(h.get('country', '?'))})")
+        if result.get("security_headers"):
+            missing = sum(1 for v in result["security_headers"].values() if v == "MISSING")
+            total = len(result["security_headers"])
+            lines.append(f"\n<b>Security Headers:</b> {total - missing}/{total} present")
+            for h, v in result["security_headers"].items():
+                icon = "✅" if v != "MISSING" else "❌"
+                lines.append(f"  {icon} {h}")
+        if result.get("cookies"):
+            lines.append(f"\n<b>Cookies:</b> {len(result['cookies'])} found")
+            for c in result["cookies"][:5]:
+                flags = ", ".join(c["flags"]) if c["flags"] else "NO FLAGS"
+                lines.append(f"  • {esc(c['name'])}: {flags}")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_webscan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Scan website for vulnerabilities"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /webscan [url]\nScans for vulns, PII leaks, misconfigs")
+            return
+        await update.message.reply_text(f"🛡️ Scanning {args} for vulnerabilities...")
+        result = await web_scan(args)
+        findings = result.get("findings", [])
+        lines = [f"🛡️ <b>WEB VULNERABILITY SCAN:</b> {esc(args)}\n"]
+        if not findings:
+            lines.append("✅ No issues found (basic scan)")
+        else:
+            high = sum(1 for f in findings if f["severity"] == "HIGH")
+            med = sum(1 for f in findings if f["severity"] == "MEDIUM")
+            low = sum(1 for f in findings if f["severity"] == "LOW")
+            lines.append(f"Found <b>{len(findings)}</b> issue(s): 🔴{high} HIGH  🟡{med} MED  🔵{low} LOW\n")
+            for f in findings:
+                sev_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(f["severity"], "⚪")
+                lines.append(f"{sev_icon} <b>[{f['severity']}]</b> {esc(f['type'])}")
+                lines.append(f"   {esc(f['detail'])}")
+                if f.get("data"):
+                    for item in f["data"][:5]:
+                        lines.append(f"   → {esc(item)}")
+                if f.get("sample"):
+                    lines.append(f"   Sample: <code>{esc(f['sample'][:80])}</code>")
+                lines.append("")
+        # AI analysis of findings
+        if findings:
+            ai = await self.ai.chat(f"I scanned {args} and found these issues: {json.dumps(findings, default=str)[:2000]}. Give me a brief risk summary and suggest next steps for exploitation/further testing.")
+            lines.append(f"🤖 <b>AI Analysis:</b>\n{esc(ai)}")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_dirscan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Brute force directories/files"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /dirscan [url]\nChecks 60+ common paths")
+            return
+        await update.message.reply_text(f"📂 Scanning directories on {args}... (checking 60+ paths)")
+        result = await dir_scan(args)
+        found = result.get("files_found", [])
+        lines = [f"📂 <b>DIRECTORY SCAN:</b> {esc(args)}\n"]
+        interesting = [f for f in found if f.get("interesting")]
+        accessible = [f for f in found if f["status"] in (200, 301, 302)]
+        forbidden = [f for f in found if f["status"] == 403]
+        if interesting:
+            lines.append(f"🔴 <b>{len(interesting)} ACCESSIBLE file(s)/dirs:</b>\n")
+            for f in interesting:
+                lines.append(f"  ✅ <b>{esc(f['path'])}</b> — {f['status']} ({f['size']} bytes)")
+        if forbidden:
+            lines.append(f"\n🟡 <b>{len(forbidden)} FORBIDDEN (exist but blocked):</b>\n")
+            for f in forbidden[:15]:
+                lines.append(f"  🚫 {esc(f['path'])} — 403")
+        if not accessible and not forbidden:
+            lines.append("✅ No exposed files/directories found")
+        lines.append(f"\n📊 Checked {result['total_checked']} paths")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_whois(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """WHOIS domain lookup"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /whois [domain]")
+            return
+        await update.message.reply_text("🔍 WHOIS lookup...")
+        result = await whois_lookup(args)
+        await self._send(update, f"🌐 <b>WHOIS:</b> {esc(args)}\n\n<pre>{esc(result[:3000])}</pre>")
+
+    async def cmd_shodan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Shodan recon (open ports, vulns)"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /shodan [IP or domain]\nChecks open ports, hostnames, known vulns")
+            return
+        await update.message.reply_text(f"🔍 Shodan lookup for {args}...")
+        result = await shodan_search(args)
+        await self._send(update, f"🌐 <b>SHODAN:</b> {esc(args)}\n\n{esc(result)}")
+
+    async def cmd_ssl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """SSL/TLS certificate check"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /ssl [domain]")
+            return
+        await update.message.reply_text(f"🔒 Checking SSL for {args}...")
+        result = await ssl_check(args)
+        if "error" in result:
+            await self._send(update, f"❌ SSL Error: {esc(result['error'])}")
+            return
+        lines = [f"🔒 <b>SSL/TLS:</b> {esc(args)}\n"]
+        if result.get("subject"):
+            lines.append(f"<b>Subject:</b> {esc(str(result['subject']))}")
+        if result.get("issuer"):
+            issuer = result['issuer']
+            lines.append(f"<b>Issuer:</b> {esc(issuer.get('organizationName', str(issuer)))}")
+        if result.get("version"):
+            lines.append(f"<b>Protocol:</b> {esc(result['version'])}")
+        if result.get("not_after"):
+            lines.append(f"<b>Expires:</b> {esc(result['not_after'])}")
+        if result.get("days_until_expiry") is not None:
+            days = result["days_until_expiry"]
+            icon = "🟢" if days > 30 else "🟡" if days > 0 else "🔴"
+            lines.append(f"{icon} <b>{days} days until expiry</b>")
+        if result.get("alt_names"):
+            lines.append(f"<b>Alt Names:</b> {', '.join(result['alt_names'][:10])}")
+        await self._send(update, "\n".join(lines))
+
+    async def cmd_crawl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Crawl page for links, emails, data"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /crawl [url]\nExtracts links, emails, phones, JS files, comments")
+            return
+        await update.message.reply_text(f"🕷️ Crawling {args}...")
+        result = await crawl_links(args)
+        lines = [f"🕷️ <b>CRAWL RESULTS:</b> {esc(args)}\n"]
+        if result.get("emails"):
+            lines.append(f"📧 <b>Emails ({len(result['emails'])}):</b>")
+            for e in result["emails"][:10]:
+                lines.append(f"  • {esc(e)}")
+        if result.get("phones"):
+            lines.append(f"\n📱 <b>Phone Numbers ({len(result['phones'])}):</b>")
+            for p in result["phones"][:10]:
+                lines.append(f"  • {esc(p)}")
+        if result.get("social_links"):
+            lines.append(f"\n🔗 <b>Social Media:</b>")
+            for s in result["social_links"][:10]:
+                lines.append(f"  • {esc(s)}")
+        if result.get("js_files"):
+            lines.append(f"\n📜 <b>JavaScript Files ({len(result['js_files'])}):</b>")
+            for j in result["js_files"][:10]:
+                lines.append(f"  • {esc(j)}")
+        if result.get("html_comments"):
+            lines.append(f"\n💬 <b>HTML Comments ({len(result['html_comments'])}):</b>")
+            for c in result["html_comments"][:5]:
+                lines.append(f"  • <code>{esc(c[:150])}</code>")
+        lines.append(f"\n<b>Internal Links:</b> {len(result.get('internal_links', []))}")
+        lines.append(f"<b>External Links:</b> {len(result.get('external_links', []))}")
+        await self._send(update, "\n".join(lines))
 
     # ── AI Hacking Commands ──
 
