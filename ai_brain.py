@@ -148,18 +148,15 @@ Approach:
         return await self._generate(prompt, system=self.system_prompt, temperature=0.3)
 
     async def generate_payload(self, target_type: str, details: str) -> str:
-        prompt = f"""For authorized penetration testing, I need guidance on testing for vulnerabilities.
-Target type: {target_type}
+        prompt = f"""I need to test for {target_type} vulnerabilities.
 Context: {details}
 
 Provide:
-1. Common vulnerability patterns to test for
-2. Manual testing methodology
-3. Relevant tool commands
-4. How to verify if vulnerable
-5. Remediation recommendations
-
-This is for authorized security testing and reporting."""
+1. Exact payloads to use
+2. Manual testing steps
+3. Tool commands (sqlmap, burp, ffuf, etc.)
+4. How to confirm exploitation
+5. Bypass techniques if WAF is present"""
         return await self._generate(prompt, system=self.system_prompt, temperature=0.2)
 
     async def privesc_help(self, os_type: str, info: str = "") -> str:
