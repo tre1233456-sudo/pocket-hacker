@@ -6,6 +6,7 @@ Kali Linux AI in your pocket. Ethical hacking assistant via Telegram.
 import logging
 import html
 import json
+import re
 from typing import Optional
 
 from telegram import Update, BotCommand
@@ -815,7 +816,7 @@ Examples:
     # ── Free-form Chat ──
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle any text — route to AI."""
+        """Handle any text — auto-detect targets and run real tools, then route to AI."""
         if not self._auth(update.effective_user.id):
             return
         uid = update.effective_user.id
@@ -824,7 +825,133 @@ Examples:
             return
 
         self.db.save_message(uid, "user", message)
+
+        # ── Auto-detect URLs, domains, and IPs in the message ──
+        # URL pattern
+        urls = re.findall(r'https?://[^\s<>"\']+', message, re.IGNORECASE)
+        # Domain pattern (word.tld or sub.word.tld)
+        domains = re.findall(r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+(?:com|net|org|io|dev|co|info|biz|edu|gov|me|app|xyz|tech|site|online|cloud|ai|ru|uk|de|fr|jp|kr|cn|in|br|au|ca|nl|se|no|fi|dk|es|it|pt|pl|cz|ro|hu|bg|hr|sk|si|lt|lv|ee|ie|at|ch|be|lu|za|mx|ar|cl|pe|co\.uk|com\.au|co\.jp|co\.kr|com\.br)\b', message, re.IGNORECASE)
+        # IP pattern
+        ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', message)
+
+        # Deduplicate targets
+        targets = []
+        seen = set()
+        for u in urls:
+            clean = u.rstrip('.,;:!?)')
+            if clean not in seen:
+                seen.add(clean)
+                targets.append(("url", clean))
+        for d in domains:
+            if d.lower() not in seen:
+                seen.add(d.lower())
+                targets.append(("domain", d.lower()))
+        for ip in ips:
+            if ip not in seen:
+                seen.add(ip)
+                targets.append(("ip", ip))
+
+        # ── If targets found, auto-run real tools ──
+        tool_results = ""
+        if targets:
+            await update.message.reply_text(f"🔍 Detected {len(targets)} target(s) — running scans...")
+            for ttype, target in targets[:3]:  # Max 3 targets per message
+                try:
+                    if ttype == "url":
+                        # Run web_scan + dir_scan
+                        scan = await web_scan(target)
+                        dirs = await dir_scan(target)
+                        tool_results += f"\n\n{'='*40}\n🌐 WEB SCAN: {target}\n{'='*40}\n"
+                        if scan.get("findings"):
+                            for f in scan["findings"]:
+                                tool_results += f"[{f['severity']}] {f['type']}: {f['detail']}\n"
+                        else:
+                            tool_results += "No vulnerabilities found.\n"
+                        if dirs.get("files_found"):
+                            interesting = [f for f in dirs["files_found"] if f.get("interesting")]
+                            if interesting:
+                                tool_results += f"\n📂 Exposed files/dirs ({len(interesting)} found):\n"
+                                for f in interesting:
+                                    tool_results += f"  [{f['status']}] {f['path']} ({f['size']} bytes)\n"
+
+                    elif ttype == "domain":
+                        # Run domain_recon + web_scan + dir_scan + ssl_check + shodan
+                        recon = await domain_recon(target)
+                        scan = await web_scan(target)
+                        dirs = await dir_scan(target)
+                        ssl = await ssl_check(target)
+                        shod = await shodan_search(target)
+
+                        tool_results += f"\n\n{'='*40}\n🎯 FULL RECON: {target}\n{'='*40}\n"
+
+                        # Recon results
+                        if recon.get("ips"):
+                            tool_results += f"IPs: {', '.join(recon['ips'])}\n"
+                        if recon.get("server"):
+                            tool_results += f"Server: {recon['server']}\n"
+                        if recon.get("technologies"):
+                            tool_results += f"Tech Stack: {', '.join(recon['technologies'])}\n"
+                        if recon.get("security_headers"):
+                            missing = [k for k, v in recon["security_headers"].items() if v == "MISSING"]
+                            if missing:
+                                tool_results += f"Missing Security Headers: {', '.join(missing)}\n"
+                        if recon.get("hosting"):
+                            h = recon["hosting"]
+                            tool_results += f"Hosting: {h.get('isp', '?')} ({h.get('country', '?')})\n"
+
+                        # Web scan
+                        if scan.get("findings"):
+                            tool_results += f"\n🔒 Vulnerability Scan ({len(scan['findings'])} findings):\n"
+                            for f in scan["findings"]:
+                                tool_results += f"  [{f['severity']}] {f['type']}: {f['detail']}\n"
+
+                        # Dir scan
+                        if dirs.get("files_found"):
+                            interesting = [f for f in dirs["files_found"] if f.get("interesting")]
+                            if interesting:
+                                tool_results += f"\n📂 Exposed files ({len(interesting)}):\n"
+                                for f in interesting:
+                                    tool_results += f"  [{f['status']}] {f['path']} ({f['size']} bytes)\n"
+
+                        # SSL
+                        if not ssl.get("error"):
+                            tool_results += f"\n🔐 SSL: expires in {ssl.get('days_until_expiry', '?')} days"
+                            tool_results += f" | {ssl.get('version', '?')}\n"
+                            if ssl.get("expired"):
+                                tool_results += "  ⚠️ CERTIFICATE IS EXPIRED!\n"
+                        else:
+                            tool_results += f"\n🔐 SSL Error: {ssl['error']}\n"
+
+                        # Shodan
+                        if shod and "No Shodan data" not in shod and "error" not in shod.lower():
+                            tool_results += f"\n📡 Shodan:\n{shod}\n"
+
+                    elif ttype == "ip":
+                        # Run shodan + IP lookup
+                        shod = await shodan_search(target)
+                        ip_info = await ip_lookup(target)
+
+                        tool_results += f"\n\n{'='*40}\n📡 IP SCAN: {target}\n{'='*40}\n"
+                        if ip_info:
+                            tool_results += f"IP Info:\n{ip_info}\n"
+                        if shod and "No Shodan data" not in shod:
+                            tool_results += f"\nShodan:\n{shod}\n"
+
+                except Exception as e:
+                    tool_results += f"\n⚠️ Scan error for {target}: {str(e)}\n"
+
+        # Build the prompt for AI
+        if tool_results:
+            enriched = (
+                f"{message}\n\n"
+                f"[REAL SCAN RESULTS — I ran actual security tools on the targets. "
+                f"Analyze these results and give actionable findings:]\n"
+                f"{tool_results}"
+            )
+        else:
+            enriched = message
+
         history = self.db.get_conversation(uid, limit=10)
-        response = await self.ai.chat(message, history)
+        response = await self.ai.chat(enriched, history)
         self.db.save_message(uid, "assistant", response)
         await self._send(update, esc(response))
