@@ -14,16 +14,16 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from .config import Config
-from .ai_brain import AIBrain
-from .tools import (
+from config import Config
+from ai_brain import AIBrain
+from tools import (
     base64_encode, base64_decode, hex_encode, hex_decode,
     url_encode, url_decode, rot13, binary_encode, binary_decode,
     morse_encode, morse_decode, generate_hashes, identify_hash,
     resolve_dns, ip_lookup, check_headers, search_cve,
     subnet_calc, get_ports_table, port_info,
 )
-from .db import Database
+from db import Database
 
 logger = logging.getLogger(__name__)
 

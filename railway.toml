@@ -2,5 +2,5 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "python -m pocket_hacker"
+startCommand = "python main_run.py"
 restartPolicyType = "ALWAYS"

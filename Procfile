@@ -1,1 +1,1 @@
-worker: python -m pocket_hacker
+worker: python main_run.py

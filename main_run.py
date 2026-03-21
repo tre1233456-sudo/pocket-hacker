@@ -1,8 +1,12 @@
-"""Pocket Hacker - Entry Point"""
+"""Pocket Hacker - Runner script for deployment."""
 import asyncio
 import logging
 import signal
 import os
+import sys
+
+# Fix imports - add current dir to path
+sys.path.insert(0, os.path.dirname(__file__))
 
 from config import Config
 from telegram_bot import TelegramBot
@@ -27,7 +31,7 @@ def main():
 
     async def run():
         await bot.start()
-        logger.info("🔓 Pocket Hacker is LIVE")
+        logger.info("Pocket Hacker is LIVE")
         stop_event = asyncio.Event()
 
         def _signal_handler():
