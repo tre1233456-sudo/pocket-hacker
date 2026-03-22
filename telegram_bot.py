@@ -1,6 +1,8 @@
 """Pocket Flipper - Telegram Bot. Pure Flipper Zero + hardware hacking."""
 
+import asyncio
 import logging
+import os
 import re
 from html import escape as esc
 from telegram import Update, BotCommand
@@ -89,13 +91,27 @@ class TelegramBot:
         bot_cmds = [BotCommand(n, d) for n, d in cmds]
         await self.app.initialize()
         await self.app.bot.set_my_commands(bot_cmds)
+
+        # Use webhook if RAILWAY_URL is set, otherwise polling
+        railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_URL")
+        if railway_url:
+            if not railway_url.startswith("http"):
+                railway_url = f"https://{railway_url}"
+            webhook_url = f"{railway_url}/webhook"
+            await self.app.bot.set_webhook(webhook_url, drop_pending_updates=True)
+            logger.info(f"Webhook set: {webhook_url}")
+
         await self.app.start()
-        await self.app.updater.start_polling(drop_pending_updates=True)
+
+        if not railway_url:
+            await self.app.updater.start_polling(drop_pending_updates=True)
+
         logger.info("Pocket Flipper is online")
 
     async def stop(self):
         if self.app:
-            await self.app.updater.stop()
+            if self.app.updater.running:
+                await self.app.updater.stop()
             await self.app.stop()
             await self.app.shutdown()
             await self.ai.close()

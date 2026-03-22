@@ -28,28 +28,80 @@ def main():
 
     bot = TelegramBot(config)
 
-    async def run():
-        await bot.start()
-        logger.info("Pocket Flipper is LIVE")
-        stop_event = asyncio.Event()
+    railway_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("RAILWAY_URL")
 
-        def _signal_handler():
-            stop_event.set()
+    if railway_url:
+        # Webhook mode on Railway
+        from aiohttp import web
 
-        loop = asyncio.get_event_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, _signal_handler)
-            except NotImplementedError:
-                pass
+        async def webhook_handler(request):
+            import json
+            data = await request.read()
+            update = bot.app.update_queue
+            from telegram import Update as TGUpdate
+            upd = TGUpdate.de_json(json.loads(data), bot.app.bot)
+            await bot.app.process_update(upd)
+            return web.Response(text="ok")
 
-        await stop_event.wait()
-        await bot.stop()
+        async def health(request):
+            return web.Response(text="Pocket Flipper is running")
 
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
+        async def run_webhook():
+            await bot.start()
+            logger.info("Pocket Flipper is LIVE (webhook mode)")
+
+            app_web = web.Application()
+            app_web.router.add_post("/webhook", webhook_handler)
+            app_web.router.add_get("/", health)
+
+            port = int(os.environ.get("PORT", 8080))
+            runner = web.AppRunner(app_web)
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", port)
+            await site.start()
+            logger.info(f"Webhook server listening on port {port}")
+
+            stop_event = asyncio.Event()
+            def _signal_handler():
+                stop_event.set()
+            loop = asyncio.get_event_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    loop.add_signal_handler(sig, _signal_handler)
+                except NotImplementedError:
+                    pass
+            await stop_event.wait()
+            await runner.cleanup()
+            await bot.stop()
+
+        try:
+            asyncio.run(run_webhook())
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+    else:
+        # Polling mode for local dev
+        async def run():
+            await bot.start()
+            logger.info("Pocket Flipper is LIVE (polling mode)")
+            stop_event = asyncio.Event()
+
+            def _signal_handler():
+                stop_event.set()
+
+            loop = asyncio.get_event_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    loop.add_signal_handler(sig, _signal_handler)
+                except NotImplementedError:
+                    pass
+
+            await stop_event.wait()
+            await bot.stop()
+
+        try:
+            asyncio.run(run())
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
 
 
 if __name__ == "__main__":
