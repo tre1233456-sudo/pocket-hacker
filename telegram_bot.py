@@ -30,7 +30,7 @@ from flipper_tools import (
     flipper_apps_list, rolling_code_info, access_control_bypass,
 )
 from phone_tools import (
-    phone_setup_guide, ble_spam_script, wifi_deauth_script, wifi_evil_twin_script,
+    phone_setup_guide, wifi_deauth_script, wifi_evil_twin_script,
     nfc_phone_script, ir_blaster_script, network_scan_script, arp_spoof_script,
     wifi_scan_script, packet_sniffer_script, ble_scan_script, phone_jammer_info,
     phone_full_toolkit, ish_setup_script, ssh_remote_tools,
@@ -496,7 +496,7 @@ class TelegramBot:
     async def cmd_phoneble(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
             return
-        await self._send(update, f"<pre>{esc(ble_spam_script())}</pre>")
+        await self._send(update, f"<pre>{esc(ble_scan_script())}</pre>")
 
     async def cmd_phonedeauth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -718,7 +718,7 @@ class TelegramBot:
                 "ble spam phone", "deauth phone", "evil twin phone", "phone flipper", "phone transmit",
                 "phone signal", "phone jam", "phone toolkit")):
             if "ble" in msg_lower or "bluetooth" in msg_lower:
-                tool_results += f"\n{ble_spam_script()}\n"
+                tool_results += f"\n{ble_scan_script()}\n"
             elif "deauth" in msg_lower:
                 tool_results += f"\n{wifi_deauth_script()}\n"
             elif "evil" in msg_lower or "twin" in msg_lower:
