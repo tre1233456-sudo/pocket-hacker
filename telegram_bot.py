@@ -28,6 +28,19 @@ from tools import (
     crawl_links, sqli_test, xss_test, lfi_test,
     extract_sensitive_files, full_exploit,
 )
+from flipper_tools import (
+    generate_duckyscript, list_badusb_payloads, BADUSB_TEMPLATES,
+    rfid_info, generate_nfc_file, generate_rfid_file, mifare_keys, calc_uid_checksum,
+    subghz_info, generate_sub_file, subghz_bruteforce,
+    generate_ir_file, ir_protocols,
+    generate_deauth_script, generate_evil_portal, generate_beacon_flood,
+    generate_wifi_pineapple_setup,
+    ble_spam_info, generate_ble_spam_script,
+    rpi_gpio_pinout, rpi_hid_attack_script, rpi_wardriving_setup, rpi_packet_sniffer,
+    ibutton_info, generate_ibutton_file,
+    flipper_firmware_info, flipper_file_structure, frequency_info, jamming_info,
+    flipper_generate,
+)
 from db import Database
 
 logger = logging.getLogger(__name__)
@@ -97,6 +110,24 @@ class TelegramBot:
             ("clear", self.cmd_clear),
             ("whoami", self.cmd_whoami),
             ("uncensored", self.cmd_uncensored),
+            ("badusb", self.cmd_badusb),
+            ("rfid", self.cmd_rfid),
+            ("nfc", self.cmd_nfc),
+            ("subghz", self.cmd_subghz),
+            ("ir", self.cmd_ir),
+            ("deauth", self.cmd_deauth),
+            ("evilportal", self.cmd_evilportal),
+            ("ble", self.cmd_ble),
+            ("gpio", self.cmd_gpio),
+            ("hidattack", self.cmd_hidattack),
+            ("wardrive", self.cmd_wardrive),
+            ("sniffer", self.cmd_sniffer),
+            ("ibutton", self.cmd_ibutton),
+            ("firmware", self.cmd_firmware),
+            ("flipper", self.cmd_flipper),
+            ("freq", self.cmd_freq),
+            ("mifare", self.cmd_mifare),
+            ("genfile", self.cmd_genfile),
         ]
 
         for name, handler in commands:
@@ -183,7 +214,29 @@ class TelegramBot:
 /ctf [challenge] — CTF solving help
 /payload [type] — Exploit/payload guidance
 
-<b>📝 Other:</b>
+<b>� FLIPPER ZERO / HARDWARE:</b>
+/badusb [name] — Generate BadUSB/DuckyScript payloads
+/rfid [protocol] — RFID protocol info & file gen
+/nfc [uid] — Generate NFC (.nfc) files
+/subghz [protocol] — Sub-GHz protocol DB & .sub files
+/ir [device] — IR universal remote (.ir files)
+/ibutton [uid] — iButton key file gen
+/mifare — MIFARE Classic default keys
+/genfile [type] [uid] — Generate any Flipper file
+/firmware — Flipper firmware options
+/flipper — Flipper SD card file structure
+/freq [mhz] — RF frequency lookup
+
+<b>📡 WIRELESS ATTACKS:</b>
+/deauth [bssid] — WiFi deauth script
+/evilportal [ssid] — Evil twin captive portal
+/ble [type] — BLE spam attack scripts
+/wardrive — RPi wardriving setup
+/sniffer — Network packet sniffer
+/hidattack — RPi Zero USB HID attack
+/gpio — Raspberry Pi GPIO pinout
+
+<b>�📝 Other:</b>
 /note /notes — Save & view notes
 /clear — Clear chat history
 /whoami — Your info
@@ -1006,6 +1059,190 @@ Examples:
         self.db.save_message(uid, "assistant", response)
         await self._send(update, esc(response))
 
+    # ── Flipper Zero / Hardware Commands ──
+
+    async def cmd_badusb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate BadUSB/DuckyScript payload"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = context.args if context.args else []
+        if not args or args[0].lower() == "list":
+            await self._send(update, esc(list_badusb_payloads()))
+            return
+        template = args[0].lower()
+        lhost = args[1] if len(args) > 1 else "ATTACKER_IP"
+        lport = args[2] if len(args) > 2 else "4444"
+        if template not in BADUSB_TEMPLATES:
+            await self._send(update, f"Unknown payload: {esc(template)}\n\n" + esc(list_badusb_payloads()))
+            return
+        script = generate_duckyscript(template, lhost=lhost, lport=lport)
+        info = BADUSB_TEMPLATES[template]
+        text = f"🦆 <b>BadUSB: {esc(info['name'])}</b> [{info['os'].upper()}]\n\n<pre>{esc(script)}</pre>\n\n💾 Save as .txt on Flipper SD: /badusb/"
+        await self._send(update, text)
+
+    async def cmd_rfid(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """RFID protocol info & file generator"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        result = rfid_info(args)
+        await self._send(update, f"<pre>{esc(result)}</pre>")
+
+    async def cmd_nfc(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate Flipper NFC file"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = context.args if context.args else []
+        if not args:
+            await self._send(update, "Usage: /nfc [UID] [protocol]\nExample: /nfc DE:AD:BE:EF mifare_classic_1k")
+            return
+        uid = args[0]
+        proto = args[1] if len(args) > 1 else "mifare_classic_1k"
+        nfc_file = generate_nfc_file(uid, proto)
+        text = f"📱 <b>NFC File Generated</b>\n\n<pre>{esc(nfc_file[:2000])}</pre>\n\n💾 Save as .nfc on Flipper SD: /nfc/"
+        await self._send(update, text)
+
+    async def cmd_subghz(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Sub-GHz protocol info & signal gen"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if args and args.lower().startswith("brute"):
+            parts = args.split()
+            proto = parts[1] if len(parts) > 1 else "came"
+            result = subghz_bruteforce(proto)
+        elif args:
+            result = subghz_info(args)
+        else:
+            result = subghz_info()
+        await self._send(update, f"<pre>{esc(result)}</pre>")
+
+    async def cmd_ir(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate IR universal remote file"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if args.lower() == "info":
+            result = ir_protocols()
+            await self._send(update, f"<pre>{esc(result)}</pre>")
+            return
+        ir_file = generate_ir_file(args)
+        label = args if args else "Universal (ALL devices)"
+        text = f"📺 <b>IR Remote: {esc(label)}</b>\n\n<pre>{esc(ir_file[:3000])}</pre>\n\n💾 Save as .ir on Flipper SD: /infrared/"
+        await self._send(update, text)
+
+    async def cmd_deauth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate WiFi deauth attack script"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = context.args if context.args else []
+        bssid = args[0] if args else "FF:FF:FF:FF:FF:FF"
+        channel = int(args[1]) if len(args) > 1 else 1
+        script = generate_deauth_script(bssid, channel)
+        text = f"📡 <b>WiFi Deauth Script</b>\nTarget: {esc(bssid)} Ch:{channel}\n\n<pre>{esc(script)}</pre>"
+        await self._send(update, text)
+
+    async def cmd_evilportal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate evil twin captive portal"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else "Free_WiFi"
+        result = generate_evil_portal(args)
+        await self._send(update, f"<pre>{esc(result[:4000])}</pre>")
+
+    async def cmd_ble(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """BLE spam attack info & scripts"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        if args:
+            script = generate_ble_spam_script(args)
+            await self._send(update, f"<pre>{esc(script)}</pre>")
+        else:
+            await self._send(update, f"<pre>{esc(ble_spam_info())}</pre>")
+
+    async def cmd_gpio(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Raspberry Pi GPIO pinout"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(rpi_gpio_pinout())}</pre>")
+
+    async def cmd_hidattack(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """RPi Zero USB HID attack setup"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(rpi_hid_attack_script()[:4000])}</pre>")
+
+    async def cmd_wardrive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """RPi wardriving setup guide"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(rpi_wardriving_setup()[:4000])}</pre>")
+
+    async def cmd_sniffer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Network packet sniffer script"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(rpi_packet_sniffer()[:4000])}</pre>")
+
+    async def cmd_ibutton(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """iButton key info & file gen"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = context.args if context.args else []
+        if not args:
+            await self._send(update, f"<pre>{esc(ibutton_info())}</pre>")
+            return
+        uid = args[0]
+        proto = args[1] if len(args) > 1 else "ds1990a"
+        ibtn = generate_ibutton_file(uid, proto)
+        text = f"🔘 <b>iButton File</b>\n\n<pre>{esc(ibtn)}</pre>\n\n💾 Save as .ibtn on Flipper SD: /ibutton/"
+        await self._send(update, text)
+
+    async def cmd_firmware(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Flipper Zero firmware options"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(flipper_firmware_info())}</pre>")
+
+    async def cmd_flipper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Flipper Zero SD card structure"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(flipper_file_structure())}</pre>")
+
+    async def cmd_freq(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """RF frequency lookup"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = " ".join(context.args) if context.args else ""
+        result = frequency_info(args)
+        await self._send(update, f"<pre>{esc(result)}</pre>")
+
+    async def cmd_mifare(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """MIFARE Classic default keys"""
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(mifare_keys())}</pre>")
+
+    async def cmd_genfile(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate any Flipper file"""
+        if not self._auth(update.effective_user.id):
+            return
+        args = context.args if context.args else []
+        if not args:
+            await self._send(update, "Usage: /genfile [type] [uid] [protocol]\nTypes: nfc, rfid, sub, ir, ibtn, badusb\nExample: /genfile nfc DE:AD:BE:EF mifare_classic_1k")
+            return
+        ftype = args[0]
+        uid = args[1] if len(args) > 1 else "DE AD BE EF"
+        proto = args[2] if len(args) > 2 else ""
+        kwargs = {"uid": uid}
+        if proto:
+            kwargs["protocol"] = proto
+        result = flipper_generate(ftype, **kwargs)
+        text = f"📁 <b>Flipper {esc(ftype.upper())} File</b>\n\n<pre>{esc(result[:3000])}</pre>"
+        await self._send(update, text)
+
     # ── Free-form Chat ──
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1104,6 +1341,141 @@ Examples:
             auto_ran = True
             htype = identify_hash(h)
             tool_results += f"\n#️⃣ HASH IDENTIFIED: {h}\n  Type: {htype}\n"
+
+        # ── Flipper Zero / Hardware intent detection ──
+
+        # BadUSB / DuckyScript intent
+        if any(w in msg_lower for w in ("badusb", "ducky", "rubber ducky", "hid attack", "usb payload", "keystroke injection")):
+            auto_ran = True
+            # Try to extract a template name
+            tmatch = None
+            for tname in BADUSB_TEMPLATES:
+                if tname.replace("_", " ") in msg_lower or tname in msg_lower:
+                    tmatch = tname
+                    break
+            if tmatch:
+                script = generate_duckyscript(tmatch)
+                info = BADUSB_TEMPLATES[tmatch]
+                tool_results += f"\n🦆 BADUSB: {info['name']} [{info['os'].upper()}]\n{script}\n"
+            else:
+                tool_results += f"\n🦆 BADUSB PAYLOADS:\n{list_badusb_payloads()}\n"
+
+        # RFID/NFC intent
+        if any(w in msg_lower for w in ("rfid", "nfc", "mifare", "ntag", "em4100", "hid prox", "proximity card", "clone card", "card clone")):
+            auto_ran = True
+            uid_match = re.search(r'([0-9A-Fa-f]{2}[:\- ]){3,}[0-9A-Fa-f]{2}', message)
+            if uid_match:
+                uid = uid_match.group(0)
+                tool_results += f"\n📡 UID ANALYSIS:\n{calc_uid_checksum(uid)}\n"
+                if "mifare" in msg_lower or "nfc" in msg_lower:
+                    nfc = generate_nfc_file(uid)
+                    tool_results += f"\n📱 NFC FILE:\n{nfc[:1000]}\n"
+                else:
+                    rfid = generate_rfid_file(uid)
+                    tool_results += f"\n📡 RFID FILE:\n{rfid}\n"
+            elif "mifare" in msg_lower and "key" in msg_lower:
+                tool_results += f"\n{mifare_keys()}\n"
+            else:
+                proto = ""
+                for p in ("em4100", "hid_prox", "t5577", "mifare_classic", "ntag215", "ntag216", "felica", "iclass"):
+                    if p.replace("_", " ") in msg_lower or p in msg_lower:
+                        proto = p
+                        break
+                tool_results += f"\n{rfid_info(proto)}\n"
+
+        # Sub-GHz intent
+        if any(w in msg_lower for w in ("sub-ghz", "subghz", "sub ghz", "garage", "gate remote", "433", "315 mhz", "rolling code", "brute force remote")):
+            auto_ran = True
+            if "brute" in msg_lower:
+                proto = "came"
+                for p in ("came", "nice_flo", "princeton", "linear", "chamberlain", "gate_tx"):
+                    if p.replace("_", " ") in msg_lower or p in msg_lower:
+                        proto = p
+                        break
+                tool_results += f"\n{subghz_bruteforce(proto)}\n"
+            else:
+                proto = ""
+                for p in ("princeton", "keeloq", "came", "nice", "somfy", "linear", "chamberlain", "hormann", "faac", "bft"):
+                    if p in msg_lower:
+                        proto = p
+                        break
+                tool_results += f"\n{subghz_info(proto)}\n"
+
+        # IR / remote control intent
+        if any(w in msg_lower for w in ("infrared", "ir remote", "universal remote", "tv remote", "ir blaster")) and not auto_ran:
+            auto_ran = True
+            device = ""
+            for d in ("tv_power", "tv_mute", "tv_vol", "ac_off", "projector"):
+                if d.replace("_", " ") in msg_lower:
+                    device = d
+                    break
+            if "all" in msg_lower or not device:
+                ir_file = generate_ir_file()
+                tool_results += f"\n📺 UNIVERSAL IR REMOTE:\n{ir_file[:2000]}\n"
+            else:
+                ir_file = generate_ir_file(device)
+                tool_results += f"\n📺 IR SIGNAL: {device}\n{ir_file}\n"
+
+        # WiFi attack intent
+        if any(w in msg_lower for w in ("deauth", "evil twin", "evil portal", "captive portal", "beacon flood", "wifi attack", "wifi hack", "pineapple")):
+            auto_ran = True
+            if "evil" in msg_lower or "captive" in msg_lower or "portal" in msg_lower:
+                ssid_match = re.search(r'(?:ssid|name|called)\s+["\']?(\S+)["\']?', msg_lower)
+                ssid = ssid_match.group(1) if ssid_match else "Free_WiFi"
+                tool_results += f"\n{generate_evil_portal(ssid)[:3000]}\n"
+            elif "beacon" in msg_lower or "flood" in msg_lower:
+                tool_results += f"\n{generate_beacon_flood()}\n"
+            elif "pineapple" in msg_lower:
+                tool_results += f"\n{generate_wifi_pineapple_setup()}\n"
+            else:
+                bssid_match = re.search(r'([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}', message)
+                bssid = bssid_match.group(0) if bssid_match else "FF:FF:FF:FF:FF:FF"
+                tool_results += f"\n{generate_deauth_script(bssid)}\n"
+
+        # BLE spam intent
+        if any(w in msg_lower for w in ("ble spam", "bluetooth spam", "airdrop spam", "flipper ble", "fast pair spam")):
+            auto_ran = True
+            attack_type = "apple_airdrop"
+            for atype in ("apple_airpods", "apple_tv", "android_fast_pair", "samsung_buds", "windows_swift_pair"):
+                if atype.replace("_", " ") in msg_lower:
+                    attack_type = atype
+                    break
+            tool_results += f"\n{ble_spam_info()}\n"
+            tool_results += f"\n{generate_ble_spam_script(attack_type)}\n"
+
+        # GPIO / Raspberry Pi intent
+        if any(w in msg_lower for w in ("gpio", "pinout", "raspberry pi", "rpi")) and not auto_ran:
+            auto_ran = True
+            if "wardri" in msg_lower:
+                tool_results += f"\n{rpi_wardriving_setup()}\n"
+            elif "sniff" in msg_lower or "packet" in msg_lower:
+                tool_results += f"\n{rpi_packet_sniffer()}\n"
+            elif "hid" in msg_lower or "rubber" in msg_lower or "p4wn" in msg_lower:
+                tool_results += f"\n{rpi_hid_attack_script()}\n"
+            else:
+                tool_results += f"\n{rpi_gpio_pinout()}\n"
+
+        # Flipper firmware intent
+        if any(w in msg_lower for w in ("flipper firmware", "unleashed", "roguemaster", "momentum firmware", "xtreme firmware")):
+            auto_ran = True
+            tool_results += f"\n{flipper_firmware_info()}\n"
+
+        # Frequency lookup intent
+        if re.search(r'\b\d{2,4}\.?\d*\s*mhz\b', msg_lower):
+            freq_match = re.search(r'(\d{2,4}\.?\d*)\s*mhz', msg_lower)
+            if freq_match:
+                auto_ran = True
+                tool_results += f"\n{frequency_info(freq_match.group(1))}\n"
+
+        # Jamming intent
+        if any(w in msg_lower for w in ("jamming", "jammer", "signal jam")):
+            auto_ran = True
+            tool_results += f"\n{jamming_info()}\n"
+
+        # iButton intent
+        if "ibutton" in msg_lower or "i-button" in msg_lower:
+            auto_ran = True
+            tool_results += f"\n{ibutton_info()}\n"
 
         # ── Auto-detect URLs, domains, and IPs in the message ──
         urls = re.findall(r'https?://[^\s<>"\']+', message, re.IGNORECASE)
