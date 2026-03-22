@@ -33,7 +33,7 @@ from phone_tools import (
     phone_setup_guide, ble_spam_script, wifi_deauth_script, wifi_evil_twin_script,
     nfc_phone_script, ir_blaster_script, network_scan_script, arp_spoof_script,
     wifi_scan_script, packet_sniffer_script, ble_scan_script, phone_jammer_info,
-    phone_full_toolkit,
+    phone_full_toolkit, ish_setup_script, ssh_remote_tools,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,8 @@ class TelegramBot:
             ("phonescan", "📡 WiFi scanner from phone"),
             ("phonesniff", "📡 Packet sniffer from phone"),
             ("phoneblescan", "📡 BLE device scanner"),
-            ("phonejam", "📡 Signal disruption info"),
+            ("phonejam", "📡 Signal frequency reference"),
+            ("sshtools", "🖥️ SSH remote execution scripts"),
         ]
 
         for name, _ in cmds:
@@ -203,20 +204,21 @@ class TelegramBot:
             "/apps - Essential Flipper apps\n"
             "/firmware - Custom firmware\n"
             "/flipper [topic] - Flipper AI help\n\n"
-            "<b>PHONE ATTACKS (Termux):</b>\n"
-            "/phone - Full phone attack toolkit\n"
-            "/phonesetup - Termux setup guide\n"
-            "/phoneble - BLE spam from phone\n"
-            "/phonedeauth - WiFi deauth from phone\n"
-            "/phoneevil - Evil twin from phone\n"
-            "/phonenfc - NFC clone/emulate phone\n"
-            "/phoneir - IR blaster phone\n"
-            "/phonenet - Network recon phone\n"
-            "/phonemitm - ARP spoof MITM phone\n"
-            "/phonescan - WiFi scanner phone\n"
-            "/phonesniff - Packet capture phone\n"
-            "/phoneblescan - BLE scanner phone\n"
-            "/phonejam - Signal jamming info\n\n"
+            "<b>IPHONE TOOLS (iSH + App Store):</b>\n"
+            "/phone - Full iPhone toolkit overview\n"
+            "/phonesetup - iSH setup (nmap/hydra/python3)\n"
+            "/phoneble - BLE spam via nRF Connect\n"
+            "/phoneblescan - BLE scanner apps + Python\n"
+            "/phonenfc - NFC read/write from iPhone\n"
+            "/phonenet - Network scanner (nmap in iSH)\n"
+            "/phonescan - WiFi recon commands\n"
+            "/phonemitm - ARP spoof via SSH to Pi\n"
+            "/phonesniff - Packet capture methods\n"
+            "/phonedeauth - Deauth via SSH to Pi\n"
+            "/phoneevil - Evil twin via SSH to Pi\n"
+            "/phoneir - IR via Flipper + Broadlink\n"
+            "/phonejam - Signal frequency reference\n"
+            "/sshtools - SSH remote control scripts\n\n"
             "Or just type anything - I answer everything."
         )
         await self._send(update, text)
@@ -545,6 +547,11 @@ class TelegramBot:
         if not self._auth(update.effective_user.id):
             return
         await self._send(update, f"<pre>{esc(phone_jammer_info())}</pre>")
+
+    async def cmd_sshtools(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(ssh_remote_tools()[:3500])}</pre>")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle ANY text message. Auto-detect topics, always respond."""
