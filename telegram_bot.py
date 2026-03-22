@@ -29,6 +29,12 @@ from flipper_tools import (
     flipper_u2f_info, flipper_gpio_tools, ir_fuzzing, nfc_fuzzing,
     flipper_apps_list, rolling_code_info, access_control_bypass,
 )
+from phone_tools import (
+    phone_setup_guide, ble_spam_script, wifi_deauth_script, wifi_evil_twin_script,
+    nfc_phone_script, ir_blaster_script, network_scan_script, arp_spoof_script,
+    wifi_scan_script, packet_sniffer_script, ble_scan_script, phone_jammer_info,
+    phone_full_toolkit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,20 @@ class TelegramBot:
             ("signal", "Signal scanning guide"),
             ("bluescan", "Bluetooth/BLE scanner"),
             ("genfile", "Generate Flipper files"),
+            # Phone attack commands
+            ("phone", "📱 Phone attack toolkit overview"),
+            ("phonesetup", "📱 Termux setup guide"),
+            ("phoneble", "📡 BLE spam from phone"),
+            ("phonedeauth", "📡 WiFi deauth from phone"),
+            ("phoneevil", "📡 Evil twin from phone"),
+            ("phonenfc", "📱 NFC clone/emulate from phone"),
+            ("phoneir", "📱 IR blaster from phone"),
+            ("phonenet", "📡 Network scanner from phone"),
+            ("phonemitm", "📡 MITM/ARP spoof from phone"),
+            ("phonescan", "📡 WiFi scanner from phone"),
+            ("phonesniff", "📡 Packet sniffer from phone"),
+            ("phoneblescan", "📡 BLE device scanner"),
+            ("phonejam", "📡 Signal disruption info"),
         ]
 
         for name, _ in cmds:
@@ -183,6 +203,20 @@ class TelegramBot:
             "/apps - Essential Flipper apps\n"
             "/firmware - Custom firmware\n"
             "/flipper [topic] - Flipper AI help\n\n"
+            "<b>PHONE ATTACKS (Termux):</b>\n"
+            "/phone - Full phone attack toolkit\n"
+            "/phonesetup - Termux setup guide\n"
+            "/phoneble - BLE spam from phone\n"
+            "/phonedeauth - WiFi deauth from phone\n"
+            "/phoneevil - Evil twin from phone\n"
+            "/phonenfc - NFC clone/emulate phone\n"
+            "/phoneir - IR blaster phone\n"
+            "/phonenet - Network recon phone\n"
+            "/phonemitm - ARP spoof MITM phone\n"
+            "/phonescan - WiFi scanner phone\n"
+            "/phonesniff - Packet capture phone\n"
+            "/phoneblescan - BLE scanner phone\n"
+            "/phonejam - Signal jamming info\n\n"
             "Or just type anything - I answer everything."
         )
         await self._send(update, text)
@@ -445,6 +479,73 @@ class TelegramBot:
         result = iphone_ble_scanner() + "\n\n" + iphone_nfc_read()
         await self._send(update, f"<pre>{esc(result[:3500])}</pre>")
 
+    # ==================== PHONE ATTACK COMMANDS ====================
+
+    async def cmd_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(phone_full_toolkit())}</pre>")
+
+    async def cmd_phonesetup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(phone_setup_guide())}</pre>")
+
+    async def cmd_phoneble(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(ble_spam_script())}</pre>")
+
+    async def cmd_phonedeauth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(wifi_deauth_script())}</pre>")
+
+    async def cmd_phoneevil(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(wifi_evil_twin_script())}</pre>")
+
+    async def cmd_phonenfc(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(nfc_phone_script())}</pre>")
+
+    async def cmd_phoneir(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(ir_blaster_script())}</pre>")
+
+    async def cmd_phonenet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(network_scan_script())}</pre>")
+
+    async def cmd_phonemitm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(arp_spoof_script())}</pre>")
+
+    async def cmd_phonescan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(wifi_scan_script())}</pre>")
+
+    async def cmd_phonesniff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(packet_sniffer_script())}</pre>")
+
+    async def cmd_phoneblescan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(ble_scan_script())}</pre>")
+
+    async def cmd_phonejam(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update.effective_user.id):
+            return
+        await self._send(update, f"<pre>{esc(phone_jammer_info())}</pre>")
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle ANY text message. Auto-detect topics, always respond."""
         if not self._auth(update.effective_user.id):
@@ -603,6 +704,34 @@ class TelegramBot:
         # App list detection
         if any(w in msg_lower for w in ("app list", "best app", "must have app", "flipper app", "install app")):
             tool_results += f"\n{flipper_apps_list()}\n"
+
+        # Phone attack detection
+        if any(w in msg_lower for w in ("phone attack", "termux", "phone hack", "phone ble", "phone deauth",
+                "phone wifi", "phone nfc", "phone ir", "phone scan", "phone sniff", "phone mitm",
+                "ble spam phone", "deauth phone", "evil twin phone", "phone flipper", "phone transmit",
+                "phone signal", "phone jam", "phone toolkit")):
+            if "ble" in msg_lower or "bluetooth" in msg_lower:
+                tool_results += f"\n{ble_spam_script()}\n"
+            elif "deauth" in msg_lower:
+                tool_results += f"\n{wifi_deauth_script()}\n"
+            elif "evil" in msg_lower or "twin" in msg_lower:
+                tool_results += f"\n{wifi_evil_twin_script()}\n"
+            elif "nfc" in msg_lower:
+                tool_results += f"\n{nfc_phone_script()}\n"
+            elif "ir" in msg_lower or "infrared" in msg_lower or "blaster" in msg_lower:
+                tool_results += f"\n{ir_blaster_script()}\n"
+            elif "mitm" in msg_lower or "arp" in msg_lower or "spoof" in msg_lower:
+                tool_results += f"\n{arp_spoof_script()}\n"
+            elif "sniff" in msg_lower or "capture" in msg_lower:
+                tool_results += f"\n{packet_sniffer_script()}\n"
+            elif "scan" in msg_lower:
+                tool_results += f"\n{wifi_scan_script()}\n"
+            elif "jam" in msg_lower:
+                tool_results += f"\n{phone_jammer_info()}\n"
+            elif "setup" in msg_lower or "install" in msg_lower or "termux" in msg_lower:
+                tool_results += f"\n{phone_setup_guide()}\n"
+            else:
+                tool_results += f"\n{phone_full_toolkit()}\n"
 
         # Build enriched prompt for AI
         if tool_results:
