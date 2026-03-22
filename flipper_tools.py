@@ -906,3 +906,282 @@ def flipper_generate(file_type, **kwargs):
     if file_type not in generators:
         return f"Unknown file type: {file_type}\nSupported: {', '.join(generators.keys())}"
     return generators[file_type]()
+
+
+# === Car Key / Vehicle Signal Database ===
+
+CAR_KEY_DB = {
+    # US Cars - 315 MHz
+    "toyota": {"freq": "315 MHz", "protocol": "Rolling Code (Toyota proprietary)", "type": "Smart Key / Proximity", "attack": "RollJam, Relay Attack", "notes": "2018+ uses BLE+UWB. Older models 315MHz OOK."},
+    "honda": {"freq": "315 MHz", "protocol": "Rolling Code", "type": "Smart Key", "attack": "Rolling-PWN (CVE-2022-27254), Replay on some models", "notes": "2012-2022 vulnerable to Rolling-PWN attack. Sends 10 rolling codes."},
+    "ford": {"freq": "315 MHz", "protocol": "KeeLoq Rolling Code", "type": "Transponder + Remote", "attack": "Relay Attack, KeeLoq cryptanalysis", "notes": "FordPass uses BLE. Older = 315MHz KeeLoq."},
+    "chevrolet": {"freq": "315 MHz", "protocol": "KeeLoq / Rolling", "type": "Key Fob", "attack": "Relay, RollJam", "notes": "GM uses KeeLoq variant. Some trucks brute-forceable."},
+    "gmc": {"freq": "315 MHz", "protocol": "KeeLoq / Rolling", "type": "Key Fob", "attack": "Relay, RollJam", "notes": "Same as Chevrolet (GM platform)."},
+    "dodge": {"freq": "315 MHz", "protocol": "Hitag AES", "type": "Smart Key", "attack": "Relay Attack", "notes": "Chrysler/Dodge uses Hitag transponder."},
+    "jeep": {"freq": "315 MHz", "protocol": "Hitag AES", "type": "Smart Key", "attack": "Relay Attack, CAN injection", "notes": "Cherokee famously hacked in 2015 (remote CAN)."},
+    "tesla": {"freq": "315 MHz (US) / 433 MHz (EU)", "protocol": "BLE + Passive Entry", "type": "Phone Key / Card / Fob", "attack": "BLE Relay (NCC Group 2022), Pin-to-Drive bypass", "notes": "Model 3/Y use BLE phone key. Card uses NFC 13.56MHz."},
+    "nissan": {"freq": "315 MHz", "protocol": "Rolling Code", "type": "Intelligent Key", "attack": "Relay Attack", "notes": "I-Key uses 315MHz + 134kHz LF wake."},
+    "subaru": {"freq": "315 MHz", "protocol": "Fixed Code (older) / Rolling", "type": "Key Fob", "attack": "Replay on pre-2017 Forester, Relay on newer", "notes": "Some older models use FIXED codes - trivially replayable."},
+    # EU Cars - 433 MHz
+    "bmw": {"freq": "433 MHz (EU) / 315 MHz (US)", "protocol": "Hitag2 / CAS", "type": "Comfort Access", "attack": "Relay Attack, CAS module clone", "notes": "Comfort Access uses 433MHz + LF 125kHz. Keyless theft common."},
+    "mercedes": {"freq": "433 MHz (EU) / 315 MHz (US)", "protocol": "FBS4 Rolling", "type": "KEYLESS-GO", "attack": "Relay Attack, OBD key programming", "notes": "FBS4 is strongest. Older FBS3 cracked."},
+    "audi": {"freq": "433 MHz (EU) / 315 MHz (US)", "protocol": "Megamos Crypto / AUT64", "type": "Advanced Key", "attack": "Relay Attack, Megamos Crypto broken", "notes": "VW Group. Megamos transponder cracked by researchers."},
+    "volkswagen": {"freq": "433 MHz (EU) / 315 MHz (US)", "protocol": "Megamos / Hitag2", "type": "KESSY", "attack": "RollJam, Relay, Hitag2 cracked", "notes": "VW Group keyless vulnerable. Hitag2 broken since 2012."},
+    "porsche": {"freq": "433 MHz", "protocol": "Hitag2 / PKES", "type": "Entry & Drive", "attack": "Relay Attack", "notes": "Same VW Group vulnerabilities."},
+    "land_rover": {"freq": "433 MHz", "protocol": "Pektron Rolling", "type": "Smart Key", "attack": "Relay Attack, CAN injection", "notes": "Range Rover/Defender. Very commonly relay-stolen in UK."},
+    "jaguar": {"freq": "433 MHz", "protocol": "Pektron Rolling", "type": "Smart Key", "attack": "Relay Attack", "notes": "Same as Land Rover (JLR group)."},
+    "volvo": {"freq": "433 MHz", "protocol": "Rolling Code", "type": "PCC Key", "attack": "Relay Attack", "notes": "Newer models use CMA/SPA platform."},
+    "hyundai": {"freq": "433 MHz (EU) / 315 MHz (US)", "protocol": "Rolling Code", "type": "Smart Key", "attack": "Replay on some 2017-2021, Relay", "notes": "Multiple CVEs for Kia/Hyundai USB port start."},
+    "kia": {"freq": "433 MHz (EU) / 315 MHz (US)", "protocol": "Rolling Code / USB bypass", "type": "Smart Key", "attack": "USB bypass (TikTok Kia Boys), Relay", "notes": "2015-2021 no immobilizer chip = stolen via USB."},
+    "mazda": {"freq": "315 MHz", "protocol": "Rolling Code", "type": "Key Fob", "attack": "Relay Attack", "notes": "Uses Atmel/Microchip crypto."},
+    "lexus": {"freq": "315 MHz", "protocol": "Toyota proprietary", "type": "Smart Access", "attack": "Relay Attack", "notes": "Same as Toyota (parent company)."},
+}
+
+
+def car_key_lookup(make):
+    """Look up car key frequency and attack info by make."""
+    make = make.lower().strip().replace(" ", "_")
+    if make in CAR_KEY_DB:
+        c = CAR_KEY_DB[make]
+        return (f" {make.upper()} Key Fob Info\n"
+                f"Frequency: {c['freq']}\n"
+                f"Protocol: {c['protocol']}\n"
+                f"Type: {c['type']}\n"
+                f"Known Attacks: {c['attack']}\n"
+                f"Notes: {c['notes']}\n\n"
+                f" To capture/replay:\n"
+                f"  1. Flipper Zero > Sub-GHz > Read on correct freq\n"
+                f"  2. HackRF One for advanced capture\n"
+                f"  3. RTL-SDR to monitor signals")
+    else:
+        cars = "\n".join(f"  * {k}: {v['freq']} ({v['protocol']})" for k, v in CAR_KEY_DB.items())
+        return f"Car not found: {make}\n\nSupported vehicles:\n{cars}"
+
+
+def car_key_list():
+    """List all cars with their key frequencies."""
+    lines = [" Car Key Frequency Database:\n"]
+    by_freq = {"315 MHz": [], "433 MHz": [], "Mixed": []}
+    for make, info in CAR_KEY_DB.items():
+        if "315" in info["freq"] and "433" in info["freq"]:
+            by_freq["Mixed"].append(f"  {make}: {info['freq']}")
+        elif "433" in info["freq"]:
+            by_freq["433 MHz"].append(f"  {make}: {info['freq']}")
+        else:
+            by_freq["315 MHz"].append(f"  {make}: {info['freq']}")
+    for freq, cars in by_freq.items():
+        if cars:
+            lines.append(f"\n {freq}:")
+            lines.extend(cars)
+    lines.append(f"\nTotal: {len(CAR_KEY_DB)} vehicles")
+    lines.append("Usage: /carscan <make>  or just type 'toyota key frequency'")
+    return "\n".join(lines)
+
+
+# === iPhone Signal Scanner ===
+
+def iphone_ble_scanner():
+    """Generate iOS Shortcuts & apps for BLE device scanning."""
+    return """ iPhone BLE Signal Scanner
+
+Your iPhone can detect Bluetooth Low Energy devices around you:
+car key fobs, AirTags, smart locks, fitness trackers, etc.
+
+=== METHOD 1: iOS Shortcuts (No App Needed) ===
+1. Open Shortcuts app
+2. Create Automation > Bluetooth
+3. Or use NFC Automation to trigger scans
+
+=== METHOD 2: Free Apps for BLE Scanning ===
+
+BLE Scanner (by Bluepixel Technologies)
+  - See all BLE devices nearby
+  - Shows signal strength (RSSI), UUID, services
+  - Real-time distance estimation
+  - FREE on App Store
+
+nRF Connect (by Nordic Semiconductor)
+  - Professional BLE scanner
+  - Decode advertising data
+  - Read/write GATT characteristics
+  - Identify device types from UUIDs
+  - FREE on App Store
+
+LightBlue
+  - Create virtual BLE peripherals
+  - Scan and connect to BLE devices
+  - Log signal data over time
+  - FREE
+
+=== METHOD 3: Detect Car Key Fobs via BLE ===
+
+Modern cars (2019+) emit BLE beacons:
+  - Tesla: Broadcasts BLE for phone key
+  - BMW: Digital Key uses BLE + UWB
+  - Audi/VW: Some models BLE proximity
+  - Hyundai/Kia: Digital Key 2.0 BLE
+
+Using nRF Connect:
+  1. Open app > Scanner tab > Start
+  2. Sort by RSSI (signal strength)
+  3. Look for these manufacturer IDs:
+     * 0x004C = Apple devices
+     * 0x0075 = Samsung
+     * 0x00E0 = Google
+     * 0x0059 = Nordic Semi (many car systems)
+     * Tesla shows as 'S%Model 3' or similar
+  4. High RSSI = device is close to you
+  5. Track RSSI changes to locate device
+
+=== METHOD 4: WiFi Recon from iPhone ===
+
+Network Analyzer (by Jiri Techet)
+  - Scan WiFi networks with signal strength
+  - Port scanner, ping, traceroute
+  - DNS lookup, whois
+  - FREE
+
+Fing
+  - Network device discovery
+  - OS detection, open ports
+  - WiFi signal mapping
+  - FREE
+
+=== METHOD 5: NFC Reading ===
+
+iPhone 7+ has built-in NFC reader:
+  1. Hold iPhone near NFC tag/card
+  2. iOS reads NDEF data automatically
+  3. For full dump use: NFC Tools (App Store)
+  
+NFC Tools app can:
+  - Read tag UID, type, technology
+  - Read/write NDEF records
+  - Read MIFARE Ultralight pages
+  - Works on transit cards, hotel keys, badges
+
+=== SIGNAL STRENGTH GUIDE ===
+RSSI (dBm) | Distance Estimate
+   0 to -30  | < 1 meter (touching)
+ -30 to -50  | 1-3 meters
+ -50 to -70  | 3-10 meters
+ -70 to -90  | 10-30 meters
+ -90+        | > 30 meters (weak)
+
+=== TIPS FOR SIGNAL HUNTING ===
+  1. Walk slowly, watch RSSI values change
+  2. Higher RSSI = closer to signal source
+  3. Use triangulation: measure from 3 spots
+  4. Metal/walls reduce signal ~10-20 dBm
+  5. Car key fobs pulse every 0.5-2 seconds
+  6. Save interesting device MACs for tracking"""
+
+
+def iphone_nfc_read():
+    """Guide for reading NFC with iPhone."""
+    return """ iPhone NFC Card Reading
+
+Built-in NFC (iPhone 7+):
+  - Hold top of iPhone near card/tag
+  - Works with: NDEF, ISO 14443, FeliCa
+
+App: NFC Tools (Free on App Store)
+  - Read: UID, ATQA, SAK, technology type
+  - Read NDEF records (URLs, text, contacts)
+  - Write NDEF to writable tags
+  - Copy tag info for Flipper Zero
+
+App: NFC TagInfo (by NXP)
+  - Deep tag analysis
+  - Memory dump (where supported)
+  - IC identification
+  - Standard compliance check
+
+What iPhone CAN read:
+  * Hotel key cards (MIFARE Ultralight)
+  * Transit cards (FeliCa, DESFire)
+  * NFC tags/stickers (NTAG, ICODE)
+  * Payment cards (basic info only)
+  * Access badges (UID only)
+  * Amiibo (NTAG215)
+
+What iPhone CANNOT do:
+  * Read MIFARE Classic (Crypto-1)
+  * Read LF RFID (125 kHz)
+  * Emulate arbitrary cards
+  * Write to protected sectors
+  * Brute-force keys
+
+Workflow with Flipper:
+  1. Read UID with iPhone NFC Tools
+  2. Note the UID, ATQA, SAK values  
+  3. Use /nfc UID protocol to generate .nfc file
+  4. Transfer .nfc file to Flipper SD card
+  5. Flipper can emulate the card"""
+
+
+def signal_scan_guide():
+    """Complete signal detection guide using iPhone + hardware."""
+    return """ Signal Scanning Guide
+
+=== WHAT YOUR iPHONE CAN DETECT ===
+
+ WiFi (2.4/5 GHz):
+  App: Network Analyzer or Fing
+  See: SSIDs, signal strength, channels, security
+  Use: Find hidden networks, rogue APs, weak signals
+
+ Bluetooth / BLE:
+  App: nRF Connect or BLE Scanner
+  See: All BLE devices, RSSI, services, manufacturer
+  Use: Find car key fobs, trackers, smart locks
+
+ NFC (13.56 MHz):
+  Built-in: Hold phone to card
+  App: NFC Tools
+  See: UID, tag type, NDEF data
+  Use: Read badges, transit cards, hotel keys
+
+=== WHAT NEEDS EXTERNAL HARDWARE ===
+
+ Sub-GHz (300-928 MHz) - Car keys, garage, gates:
+  * Flipper Zero ($170) - Best portable
+  * HackRF One ($350) - Wide range SDR
+  * RTL-SDR ($25) - Receive only
+  * YARD Stick One ($100) - Sub-GHz TX/RX
+  Connect RTL-SDR to iPhone via USB adapter!
+
+ LF RFID (125 kHz) - Access cards:
+  * Flipper Zero - Read/emulate/write
+  * Proxmark3 ($100) - Advanced RFID hacking
+  * Cannot read with iPhone (wrong frequency)
+
+=== RTL-SDR + iPHONE SETUP ===
+Yes, you CAN use SDR with iPhone!
+  1. Get RTL-SDR dongle ($25)
+  2. Get Lightning/USB-C to USB adapter
+  3. App: SDR Touch (limited iOS support)
+  4. Better: Use RPi as SDR server
+     - Install rtl_tcp on RPi
+     - Connect SDR to RPi
+     - iPhone connects via WiFi
+     - App: SDR# client
+
+=== DETECT CAR KEY SIGNALS ===
+Method 1 - BLE (modern cars):
+  Use nRF Connect on iPhone
+  Walk near parked cars
+  Look for BLE beacons from key fobs
+
+Method 2 - Sub-GHz (most cars):
+  Need: Flipper Zero or RTL-SDR
+  315 MHz: US/Japan cars
+  433 MHz: European cars
+  Press key fob button near receiver
+  Flipper: Sub-GHz > Read > observe
+
+Method 3 - Passive monitoring:
+  TPMS sensors broadcast at 315/433 MHz
+  Readable with Flipper or RTL-SDR
+  Shows tire pressure + unique sensor ID
+  Can track specific vehicles by TPMS ID"""
