@@ -1,11 +1,10 @@
-"""Pocket Hacker - Runner script for deployment."""
+"""Pocket Flipper - Runner script for deployment."""
 import asyncio
 import logging
 import signal
 import os
 import sys
 
-# Fix imports - add current dir to path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import Config
@@ -31,7 +30,7 @@ def main():
 
     async def run():
         await bot.start()
-        logger.info("Pocket Hacker is LIVE")
+        logger.info("Pocket Flipper is LIVE")
         stop_event = asyncio.Event()
 
         def _signal_handler():
