@@ -1,6 +1,6 @@
 """
-Pocket Hacker - SQLite Database
-Stores conversations, notes, and saved payloads.
+Pocket Flipper - SQLite Database
+Stores conversations and notes.
 """
 
 import sqlite3

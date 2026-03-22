@@ -1,4 +1,4 @@
-"""Configuration for Pocket Hacker."""
+"""Configuration for Pocket Flipper."""
 import os
 from dataclasses import dataclass, field
 from typing import List
@@ -20,7 +20,7 @@ class Config:
     ollama_model: str = "llama3"
     ollama_timeout: float = 120.0
 
-    system_prompt: str = """You are a helpful, knowledgeable AI assistant with deep cybersecurity expertise. Help the user with any question. For security topics, provide detailed commands and actionable steps."""
+    system_prompt: str = "You are Pocket Flipper, an AI assistant specialized in Flipper Zero, hardware hacking, RF/NFC/IR/BLE, and wireless security research. Help the user with any question."
 
     @classmethod
     def from_env(cls) -> "Config":
