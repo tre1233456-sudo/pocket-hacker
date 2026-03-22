@@ -1185,3 +1185,327 @@ Method 3 - Passive monitoring:
   Readable with Flipper or RTL-SDR
   Shows tire pressure + unique sensor ID
   Can track specific vehicles by TPMS ID"""
+
+
+#  MAXED OUT FLIPPER CAPABILITIES 
+
+def marauder_wifi_attacks():
+    return """
+ESP32 MARAUDER (WiFi Board for Flipper Zero)
+
+Required: ESP32-S2 or ESP32-WROOM (Marauder firmware)
+Install: Flash via web installer at https://github.com/justcallmekoko/ESP32Marauder
+
+ATTACKS:
+  Scan         scan -a (all APs + clients)
+  Deauth       attack -t deauth (deauth all)
+  Beacon Spam  attack -t beacon -l (list SSIDs)
+  Probe Flood  attack -t probe
+  Rickroll     attack -t rickroll (beacon spam funny SSIDs)
+  Evil Portal  ssid -a "Free WiFi" then attack -t beacon -l
+  Sniff PMKID  sniff -t pmkid (capture WPA2 handshakes)
+  Sniff Raw    sniff -t raw
+  PCAP Save    capture saved to SD card as .pcap
+
+FLIPPER GPIO WIRING (ESP32-S2):
+  Flipper TX (13)  ESP32 RX
+  Flipper RX (14)  ESP32 TX
+  Flipper 5V       ESP32 VIN
+  Flipper GND      ESP32 GND
+
+FLIPPER APP:
+  GPIO  ESP32  WiFi Marauder
+  All commands accessible from Flipper screen
+"""
+
+def nfc_relay_attack():
+    return """
+NFC RELAY ATTACK (Flipper Zero)
+
+Concept: Reader <-> Flipper A (proxy) <-> Flipper B (emulate) <-> Real Card
+
+METHOD 1 - Flipper + Android (NFCGate):
+  1. Install NFCGate on rooted Android
+  2. Phone reads real card via NFC  relays data over internet
+  3. Second phone emulates card at target reader
+  Range: Unlimited (internet relay)
+
+METHOD 2 - Two Flippers:
+  1. Flipper A: NFC  Read, hold near target card
+  2. Flipper B: NFC  Emulate saved card at reader
+  3. Timing is key - must relay within auth timeout
+
+TARGETS:
+  - Building access cards (HID iClass, DESFire)
+  - Transit cards
+  - Hotel key cards
+  - Payment cards (EMV - harder, has distance bounding)
+
+DEFENSE BYPASS:
+  - Rolling codes: Relay in real-time, no need to crack
+  - Encryption: Transparent relay, no need to decrypt
+  - Only stopped by distance-bounding protocols
+"""
+
+def subghz_fuzzing(protocol="all"):
+    protocols = {
+        "came": {"bits": 12, "te": 320, "freq": "433920000"},
+        "nice_flo": {"bits": 12, "te": 700, "freq": "433920000"},
+        "princeton": {"bits": 24, "te": 400, "freq": "433920000"},
+        "linear": {"bits": 10, "te": 500, "freq": "300000000"},
+        "gate_tx": {"bits": 24, "te": 350, "freq": "433920000"},
+        "holtek": {"bits": 12, "te": 430, "freq": "433920000"},
+        "chamberlain": {"bits": 9, "te": 1000, "freq": "300000000"},
+    }
+    if protocol != "all" and protocol in protocols:
+        p = protocols[protocol]
+        return f"""SUB-GHZ FUZZING: {protocol.upper()}
+Bits: {p["bits"]} | TE: {p["te"]}us | Freq: {p["freq"]}
+Total combinations: {2**p["bits"]}
+Estimated time: {(2**p["bits"] * p["te"] * p["bits"]) / 1000000:.1f} seconds
+
+On Flipper: Sub-GHz  Extra Actions  Frequency Analyzer
+Then: Sub-GHz  Saved  BruteForce
+Select .sub file with correct protocol"""
+    result = "SUB-GHZ FUZZING PROTOCOLS:\n"
+    for name, p in protocols.items():
+        combos = 2**p["bits"]
+        time_s = (combos * p["te"] * p["bits"]) / 1000000
+        result += f"  {name}: {p['bits']} bits, {combos} codes, ~{time_s:.0f}s\n"
+    return result
+
+def flipper_u2f_info():
+    return """
+U2F / FIDO SECURITY KEY (Flipper Zero)
+
+Flipper Zero can act as a U2F hardware security key!
+
+SETUP:
+  1. On Flipper: U2F  Register
+  2. Open browser  Go to security settings of Google/GitHub/etc
+  3. Add security key  Touch Flipper when prompted
+  4. Flipper saves the key pair
+
+SUPPORTED SITES:
+  Google, GitHub, Twitter, Facebook, Dropbox, AWS
+  Any site supporting FIDO U2F or WebAuthn
+
+HOW IT WORKS:
+  - Flipper generates unique key pair per site
+  - Private key stays on Flipper, never leaves
+  - Login: plug in Flipper USB  press button to confirm
+  - Phishing-proof: key is bound to exact domain
+"""
+
+def flipper_gpio_tools():
+    return """
+GPIO MULTITOOL (Flipper Zero)
+
+UART BRIDGE:
+  GPIO  USB-UART Bridge  Select baud rate
+  Connect: TXRX, RXTX, GNDGND
+  Baud rates: 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600
+  Use to: Access router consoles, debug IoT devices, read GPS modules
+
+I2C SCANNER:
+  GPIO  I2C Scanner  Scans all addresses 0x00-0x7F
+  Connect: SDAC1, SCLC0, GNDGND
+  Finds: EEPROM, sensors, displays, RTC chips
+
+SPI READER:
+  Read/write SPI flash chips
+  Connect: MOSIB3, MISOB4, CLKB5, CSA4, GNDGND
+  Dump: Full firmware extraction from IoT devices
+
+VOLTAGE READER:
+  GPIO  Analog Read  Shows voltage on pin
+  Range: 0-3.3V on ADC pins
+
+LOGIC ANALYZER:
+  Install: Logic Analyzer app from Flipper app store
+  8 channels, up to 1MHz sampling
+  Decode: UART, SPI, I2C, 1-Wire protocols
+
+SIGNAL GENERATOR:
+  GPIO  Signal Generator
+  Output: PWM, square wave, configurable frequency
+  Use for: Testing circuits, driving servos
+"""
+
+def ir_fuzzing():
+    return """
+IR FUZZING / BRUTE FORCE (Flipper Zero)
+
+UNIVERSAL REMOTE (built-in):
+  IR  Universal Remote  Select device type
+  Tries ALL known codes for: TVs, ACs, Projectors, Audio
+
+BRUTE FORCE (custom):
+  1. Use IR  Learn New Remote to capture protocol
+  2. Note the protocol (NEC, Samsung, RC5, RC6, SIRC, etc)
+  3. Generate .ir file with all command codes:
+
+  Filetype: IR signals file
+  Version: 1
+  # Brute force all commands 0x00-0xFF
+  name: cmd_000
+  type: parsed
+  protocol: NEC
+  address: 04 00 00 00
+  command: 00 00 00 00
+
+  (repeat for each command value)
+
+IR PROTOCOLS SUPPORTED:
+  NEC, Samsung32, RC5, RC6, SIRC, Kaseikyo, Pioneer
+  NEC42, NECext, Samsung48, RC5X, Pioneer, BOSE, Epson
+
+TIPS:
+  - Most TVs: NEC protocol, address auto-detected
+  - ACs: Kaseikyo/Raw (complex state-based)
+  - Point Flipper directly at IR receiver, close range
+  - Hold steady during brute force (takes ~30s per set)
+"""
+
+def nfc_fuzzing():
+    return """
+NFC FUZZING (Flipper Zero + Unleashed/Momentum)
+
+UID FUZZING:
+  - Randomize UID each emulation attempt
+  - Bypass UID-only access control
+  - Works on cheap readers that only check UID
+
+MIFARE CLASSIC ATTACKS:
+  1. Dictionary Attack (built-in + custom dictionaries)
+     NFC  Detect  Read with dictionary
+     Place user dict at: /ext/nfc/assets/mf_classic_dict_user.nfc
+
+  2. Nested Attack (if 1+ key known)
+     Exploits weak PRNG in Classic chips
+     Recovers all sector keys from 1 known key
+
+  3. Hardnested Attack (even on fixed-nonce cards)
+     Available in Momentum/Unleashed firmware
+     Slower but works on patched cards
+
+  4. Darkside Attack (no keys needed)
+     Exploits PRNG vulnerability
+     Works on original Mifare Classic only
+
+NTAG/ULTRALIGHT:
+  - Full read/write of NTAG 213/215/216
+  - Amiibo emulation (NTAG215)
+  - Password brute force for locked tags
+
+DESFIRE:
+  - Read public data (UID, app IDs)
+  - Cannot extract encrypted keys (AES-128)
+  - Relay attack is main bypass method
+"""
+
+def flipper_apps_list():
+    return """
+ESSENTIAL FLIPPER APPS (App Store + External)
+
+HACKING:
+  WiFi Marauder   - ESP32 WiFi attacks (deauth, scan, PMKID)
+  BLE Spam        - Flood Apple/Android/Samsung BLE popups
+  Sub-GHz Bruteforcer - Brute force garage/gate remotes
+  NFC Maker       - Create custom NFC tags (URLs, WiFi, vCard)
+  Mifare Nested   - Advanced Mifare Classic key recovery
+  RFID Fuzzer     - Fuzz RFID readers with random UIDs
+  BadUSB + WiFi   - BadUSB with WiFi exfil via ESP32
+
+TOOLS:
+  Signal Generator - PWM/square wave on GPIO
+  Logic Analyzer   - Decode UART/SPI/I2C/1-Wire
+  UART Terminal    - Serial console over GPIO
+  I2C Scanner      - Find I2C devices on bus
+  SPI Mem Manager  - Read/write SPI flash chips
+  Frequency Analyzer - Find unknown RF frequencies
+  Spectrum Analyzer - Visual RF spectrum (with CC1101)
+
+GAMES & FUN:
+  Doom, Snake, Tetris, Flappy Bird, 2048
+  Tamagotchi (Flipper has built-in virtual pet!)
+
+CUSTOM FIRMWARE EXTRAS:
+  Unleashed: Removes TX frequency restrictions
+  Momentum: All unleashed features + extra apps + themes
+  RogueMaster: Most apps pre-installed
+"""
+
+def rolling_code_info():
+    return """
+ROLLING CODE ATTACKS (Sub-GHz)
+
+FIXED CODE (vulnerable):
+  - Came, Nice FLO, Princeton, Linear, GateTX
+  - Capture once  replay forever
+  - Brute force: Try all codes (2^12 = 4096 for 12-bit)
+
+ROLLING CODE (harder):
+  - KeeLoq, Nice FlorS, Somfy, Chamberlain, LiftMaster
+  - Each press generates new code using PRNG
+  - Simple replay does NOT work
+
+ROLLING CODE ATTACKS:
+  1. RollJam:
+     - Jam + capture code 1  user presses again  capture code 2
+     - Replay code 1, save code 2 for later
+     - Needs: Flipper + jammer (or 2 Flippers)
+
+  2. Rolljam v2 (with Marauder):
+     - Automated jam + capture via ESP32
+
+  3. Key Extraction:
+     - If manufacturer key is known, can predict future codes
+     - Some KeeLoq keys leaked online
+
+  4. Time-based (Somfy):
+     - Somfy uses time window
+     - Captured code valid for short period
+
+ON FLIPPER (Unleashed/Momentum):
+  Sub-GHz  Read  Wait for signal
+  Sub-GHz  Saved  Send (for fixed codes)
+  Sub-GHz  Extra  Frequency Analyzer (find freq first)
+"""
+
+def access_control_bypass():
+    return """
+ACCESS CONTROL BYPASS (Flipper Zero)
+
+RFID (125kHz) - EM4100 / HID ProxCard:
+  1. Read: RFID  Read  Hold Flipper to card
+  2. Save & Emulate: Acts as the card
+  3. Write: Clone to T5577 blank card
+  4. Brute force: Try common facility codes
+
+NFC (13.56MHz) - Mifare / DESFire / iClass:
+  1. Read: NFC  Detect Reader  Hold to reader
+  2. Mifare Classic: Dictionary attack  nested  darkside
+  3. Emulate: Saved card via NFC  Saved  Emulate
+  4. Write: Clone to Magic Gen1a/Gen2 card
+
+HOTEL KEYS:
+  Most hotels use Mifare Classic 1K
+  Read  crack keys  full dump  emulate
+  Some hotels use Ultralight-C (harder)
+
+GARAGE / GATE:
+  Sub-GHz  Frequency Analyzer  Find freq
+  Sub-GHz  Read  Capture code
+  If fixed code: Replay. If rolling: RollJam attack.
+
+ELEVATOR:
+  Most use RFID/NFC cards  clone with Flipper
+  Some use iButton  clone with Flipper
+  Physical: IR sensor bypass with IR blaster
+
+CAR DOORS:
+  315/433 MHz rolling code  RollJam attack
+  Relay attack: Extend key fob range with 2 devices
+  Tesla: 2.4 GHz BLE  need different tools
+"""
