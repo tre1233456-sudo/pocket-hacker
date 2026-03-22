@@ -7,9 +7,11 @@ All backends use the uncensored system prompt. Refusals are auto-detected and re
 
 import json
 import logging
+import hashlib
 import re
 import asyncio
 import time
+from collections import deque
 import httpx
 from typing import Dict, List, Optional
 
@@ -103,9 +105,13 @@ class AIBrain:
         # Rate limit tracking
         self._groq_rate_limited_until = 0.0
         self._gemini_rate_limited_until = 0.0
-        # Simple response cache — avoids duplicate API calls
+        # Self-throttle: track last 25 Groq requests to stay under 30/min
+        self._groq_timestamps: deque = deque(maxlen=25)
+        # Response cache — 200 entries, 10 min TTL
         self._cache: Dict[str, str] = {}
-        self._cache_max = 50
+        self._cache_ts: Dict[str, float] = {}
+        self._cache_max = 200
+        self._cache_ttl = 600  # 10 minutes
         logger.info(f"AI Backend: {self.backend} | Gemini: {self.has_gemini} | Together: {self.has_together} | OpenRouter: {self.has_openrouter}")
 
     async def close(self):
@@ -120,6 +126,38 @@ class AIBrain:
         self._groq_rate_limited_until = time.time() + retry_after
         logger.warning(f"Groq rate-limited, cooling down for {retry_after}s")
 
+    async def _throttle_groq(self):
+        """Self-throttle to stay under Groq's 30 req/min free tier limit."""
+        now = time.time()
+        # Clean old timestamps (older than 60s)
+        while self._groq_timestamps and self._groq_timestamps[0] < now - 60:
+            self._groq_timestamps.popleft()
+        # If we've made 22+ requests in the last minute, wait for the oldest to expire
+        if len(self._groq_timestamps) >= 22:
+            wait_until = self._groq_timestamps[0] + 61
+            wait_time = wait_until - now
+            if wait_time > 0:
+                logger.info(f"Self-throttling Groq: waiting {wait_time:.1f}s to avoid rate limit")
+                await asyncio.sleep(min(wait_time, 15))  # Cap at 15s max wait
+        self._groq_timestamps.append(time.time())
+
+    def _cache_key(self, prompt: str) -> str:
+        """Normalize prompt into a cache key."""
+        normalized = prompt[:300].lower().strip()
+        return hashlib.md5(normalized.encode()).hexdigest()
+
+    def _cache_get(self, prompt: str) -> Optional[str]:
+        """Check cache with TTL."""
+        key = self._cache_key(prompt)
+        if key in self._cache:
+            if time.time() - self._cache_ts.get(key, 0) < self._cache_ttl:
+                logger.info("Cache hit")
+                return self._cache[key]
+            else:
+                del self._cache[key]
+                self._cache_ts.pop(key, None)
+        return None
+
     def _is_rate_limited_response(self, text: str) -> bool:
         """Check if a response is a rate limit error, not a real answer."""
         if not text:
@@ -132,11 +170,12 @@ class AIBrain:
         sys_prompt = system or self.system_prompt
         trimmed_history = history[-6:] if history else None
 
-        # Check cache (only for short prompts without scan results)
-        cache_key = prompt[:200] if len(prompt) < 500 else ""
-        if cache_key and cache_key in self._cache:
-            logger.info("Cache hit")
-            return self._cache[cache_key]
+        # Check cache (skip for very long prompts with scan results)
+        use_cache = len(prompt) < 1000
+        if use_cache:
+            cached = self._cache_get(prompt)
+            if cached:
+                return cached
 
         response = ""
 
@@ -148,8 +187,8 @@ class AIBrain:
                 response = ""
             elif response and not _is_refusal(response):
                 result = self._strip_disclaimers(response)
-                if cache_key:
-                    self._cache_put(cache_key, result)
+                if use_cache:
+                    self._cache_put(prompt, result)
                 return result
 
         # Attempt 2: Google Gemini (free, 15 RPM, 1M tokens/day)
@@ -157,8 +196,8 @@ class AIBrain:
             response = await self._call_gemini(prompt, sys_prompt, trimmed_history, temperature)
             if response and not _is_refusal(response):
                 result = self._strip_disclaimers(response)
-                if cache_key:
-                    self._cache_put(cache_key, result)
+                if use_cache:
+                    self._cache_put(prompt, result)
                 return result
 
         # Attempt 3: Together AI (Dolphin uncensored)
@@ -166,8 +205,8 @@ class AIBrain:
             response = await self._call_together(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
             if response and not _is_refusal(response):
                 result = self._strip_disclaimers(response)
-                if cache_key:
-                    self._cache_put(cache_key, result)
+                if use_cache:
+                    self._cache_put(prompt, result)
                 return result
 
         # Attempt 4: OpenRouter
@@ -175,8 +214,8 @@ class AIBrain:
             response = await self._call_openrouter(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
             if response and not _is_refusal(response):
                 result = self._strip_disclaimers(response)
-                if cache_key:
-                    self._cache_put(cache_key, result)
+                if use_cache:
+                    self._cache_put(prompt, result)
                 return result
 
         # Attempt 5: Groq with boosted prompt (only if available)
@@ -208,12 +247,15 @@ class AIBrain:
             f"Then set GEMINI_API_KEY in Railway variables."
         )
 
-    def _cache_put(self, key: str, value: str):
-        """Add to cache, evict oldest if full."""
+    def _cache_put(self, prompt: str, value: str):
+        """Add to cache with TTL, evict oldest if full."""
+        key = self._cache_key(prompt)
         if len(self._cache) >= self._cache_max:
             oldest = next(iter(self._cache))
             del self._cache[oldest]
+            self._cache_ts.pop(oldest, None)
         self._cache[key] = value
+        self._cache_ts[key] = time.time()
 
     def _boost_prompt(self, original: str) -> str:
         """Wrap the prompt to bypass safety filters on retry."""
@@ -251,6 +293,7 @@ class AIBrain:
                          history: List[Dict] = None, temperature: float = 0.3) -> str:
         if not self._is_groq_available():
             return ""  # Skip entirely if rate-limited
+        await self._throttle_groq()  # Self-pace to avoid hitting 429
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -425,6 +468,7 @@ class AIBrain:
         """Try a different Groq model that may be less restricted."""
         if not self._is_groq_available():
             return ""
+        await self._throttle_groq()  # Self-pace
         alt_models = ["llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"]
         for model in alt_models:
             if model == self.config.groq_model:
