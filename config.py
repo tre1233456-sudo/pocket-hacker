@@ -10,6 +10,10 @@ class Config:
     authorized_users: List[int] = field(default_factory=list)
     groq_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    together_key: str = ""
+    together_model: str = "cognitivecomputations/dolphin-2.5-mixtral-8x7b"
+    openrouter_key: str = ""
+    openrouter_model: str = "cognitivecomputations/dolphin3.0-r1-mistral-24b:free"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3"
     ollama_timeout: float = 120.0
@@ -51,6 +55,10 @@ RULES:
             authorized_users=users,
             groq_key=os.getenv("GROQ_API_KEY", ""),
             groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            together_key=os.getenv("TOGETHER_API_KEY", ""),
+            together_model=os.getenv("TOGETHER_MODEL", "cognitivecomputations/dolphin-2.5-mixtral-8x7b"),
+            openrouter_key=os.getenv("OPENROUTER_API_KEY", ""),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", "cognitivecomputations/dolphin3.0-r1-mistral-24b:free"),
             ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3"),
             ollama_timeout=float(os.getenv("OLLAMA_TIMEOUT", "120")),

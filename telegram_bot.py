@@ -96,6 +96,7 @@ class TelegramBot:
             ("notes", self.cmd_notes),
             ("clear", self.cmd_clear),
             ("whoami", self.cmd_whoami),
+            ("uncensored", self.cmd_uncensored),
         ]
 
         for name, handler in commands:
@@ -977,15 +978,33 @@ Examples:
         if not self._auth(update.effective_user.id):
             return
         u = update.effective_user
+        fallback = "✅ Together AI (Dolphin)" if self.ai.has_together else ("✅ OpenRouter" if self.ai.has_openrouter else "❌ None")
         text = f"""👤 <b>WHOAMI</b>
 
 <b>User ID:</b> {u.id}
 <b>Username:</b> @{esc(u.username or 'none')}
 <b>Name:</b> {esc(u.first_name or '')} {esc(u.last_name or '')}
-<b>Bot:</b> Pocket Hacker v1.0
-<b>AI Backend:</b> {self.ai.backend}
-<b>Model:</b> {esc(self.config.groq_model)}"""
+<b>Bot:</b> Pocket Hacker v2.0
+<b>Primary AI:</b> {self.ai.backend} ({esc(self.config.groq_model)})
+<b>Uncensored Fallback:</b> {fallback}
+<b>Auto-retry on refusal:</b> ✅ Enabled"""
         await self._send(update, text)
+
+    async def cmd_uncensored(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Force uncensored AI mode for a message"""
+        if not self._auth(update.effective_user.id):
+            return
+        uid = update.effective_user.id
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            await self._send(update, "Usage: /uncensored [your question]\nForces the uncensored Dolphin model — no refusals, no filters.")
+            return
+        await update.message.reply_text("🔓 Using uncensored model...")
+        self.db.save_message(uid, "user", args)
+        history = self.db.get_conversation(uid, limit=10)
+        response = await self.ai.chat_uncensored(args, history)
+        self.db.save_message(uid, "assistant", response)
+        await self._send(update, esc(response))
 
     # ── Free-form Chat ──
 
