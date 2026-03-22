@@ -10,6 +10,8 @@ class Config:
     authorized_users: List[int] = field(default_factory=list)
     groq_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    gemini_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
     together_key: str = ""
     together_model: str = "cognitivecomputations/dolphin-2.5-mixtral-8x7b"
     openrouter_key: str = ""
@@ -45,6 +47,8 @@ RULES:
             authorized_users=users,
             groq_key=os.getenv("GROQ_API_KEY", ""),
             groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            gemini_key=os.getenv("GEMINI_API_KEY", ""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
             together_key=os.getenv("TOGETHER_API_KEY", ""),
             together_model=os.getenv("TOGETHER_MODEL", "cognitivecomputations/dolphin-2.5-mixtral-8x7b"),
             openrouter_key=os.getenv("OPENROUTER_API_KEY", ""),

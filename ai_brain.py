@@ -96,13 +96,17 @@ class AIBrain:
         self.system_prompt = UNCENSORED_SYSTEM
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(config.ollama_timeout))
         self.backend = "groq" if config.groq_key else "ollama"
+        self.has_gemini = bool(config.gemini_key)
         self.has_together = bool(config.together_key)
         self.has_openrouter = bool(config.openrouter_key)
-        self._force_uncensored = True  # Default: always use uncensored prompt
+        self._force_uncensored = True
         # Rate limit tracking
-        self._groq_rate_limited_until = 0.0  # timestamp when groq is available again
-        self._request_timestamps: List[float] = []  # track recent requests for self-throttling
-        logger.info(f"AI Backend: {self.backend} | Together: {self.has_together} | OpenRouter: {self.has_openrouter}")
+        self._groq_rate_limited_until = 0.0
+        self._gemini_rate_limited_until = 0.0
+        # Simple response cache — avoids duplicate API calls
+        self._cache: Dict[str, str] = {}
+        self._cache_max = 50
+        logger.info(f"AI Backend: {self.backend} | Gemini: {self.has_gemini} | Together: {self.has_together} | OpenRouter: {self.has_openrouter}")
 
     async def close(self):
         await self._client.aclose()
@@ -126,39 +130,58 @@ class AIBrain:
                         history: List[Dict] = None, temperature: float = 0.3) -> str:
         """Generate response. Routes to available backends, handles rate limits."""
         sys_prompt = system or self.system_prompt
-        # Trim history to save tokens — last 6 messages max
         trimmed_history = history[-6:] if history else None
+
+        # Check cache (only for short prompts without scan results)
+        cache_key = prompt[:200] if len(prompt) < 500 else ""
+        if cache_key and cache_key in self._cache:
+            logger.info("Cache hit")
+            return self._cache[cache_key]
 
         response = ""
 
-        # Attempt 1: Primary backend — only if not rate-limited
+        # Attempt 1: Groq (fast, but strict rate limits)
         if self.backend == "groq" and self._is_groq_available():
             response = await self._call_groq(prompt, sys_prompt, trimmed_history, temperature)
             if self._is_rate_limited_response(response):
                 self._mark_groq_limited()
-                response = ""  # Don't return this, try fallbacks
+                response = ""
             elif response and not _is_refusal(response):
-                return self._strip_disclaimers(response)
-        elif self.backend == "ollama":
-            response = await self._call_ollama(prompt, sys_prompt, trimmed_history, temperature)
-            if response and not _is_refusal(response):
-                return self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response)
+                if cache_key:
+                    self._cache_put(cache_key, result)
+                return result
 
-        # Attempt 2: Together AI (Dolphin uncensored) — separate rate limit
+        # Attempt 2: Google Gemini (free, 15 RPM, 1M tokens/day)
+        if self.has_gemini and time.time() > self._gemini_rate_limited_until:
+            response = await self._call_gemini(prompt, sys_prompt, trimmed_history, temperature)
+            if response and not _is_refusal(response):
+                result = self._strip_disclaimers(response)
+                if cache_key:
+                    self._cache_put(cache_key, result)
+                return result
+
+        # Attempt 3: Together AI (Dolphin uncensored)
         if self.has_together:
             response = await self._call_together(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
             if response and not _is_refusal(response):
-                return self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response)
+                if cache_key:
+                    self._cache_put(cache_key, result)
+                return result
 
-        # Attempt 3: OpenRouter — separate rate limit
+        # Attempt 4: OpenRouter
         if self.has_openrouter:
             response = await self._call_openrouter(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
             if response and not _is_refusal(response):
-                return self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response)
+                if cache_key:
+                    self._cache_put(cache_key, result)
+                return result
 
-        # Attempt 4: Groq with boosted prompt — only if not rate-limited
+        # Attempt 5: Groq with boosted prompt (only if available)
         if self.backend == "groq" and self._is_groq_available():
-            await asyncio.sleep(1)  # Small delay before retry
+            await asyncio.sleep(1)
             boosted = self._boost_prompt(prompt)
             response = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed_history, 0.9)
             if self._is_rate_limited_response(response):
@@ -167,31 +190,30 @@ class AIBrain:
             elif response and not _is_refusal(response):
                 return self._strip_disclaimers(response)
 
-        # Attempt 5: Alt Groq model — only if not rate-limited
-        if self.backend == "groq" and self._is_groq_available():
-            response = await self._call_groq_alt_model(prompt, UNCENSORED_SYSTEM, trimmed_history)
-            if self._is_rate_limited_response(response):
-                self._mark_groq_limited()
-                response = ""
-            elif response and not _is_refusal(response):
-                return self._strip_disclaimers(response)
-
         # All attempts exhausted
         if response and not self._is_rate_limited_response(response):
-            return response + "\n\n⚠️ AI safety filters engaged. Try:\n• /uncensored [question]\n• /exploit [url] for raw tool output\n• Rephrase as 'authorized pentest on my own server'"
+            return response + "\n\n⚠️ AI safety filters engaged. Try /uncensored or /exploit [url]"
 
-        # Everything rate-limited
         wait_secs = max(0, int(self._groq_rate_limited_until - time.time()))
         return (
-            f"⚠️ All AI backends are rate-limited. Groq free tier allows ~30 requests/min.\n\n"
-            f"⏳ Try again in ~{wait_secs}s, or:\n"
-            f"• /exploit [url] — runs tools directly (no AI needed)\n"
+            f"⚠️ All AI backends are rate-limited. Try again in ~{wait_secs}s.\n\n"
+            f"💡 These commands work WITHOUT AI credits:\n"
+            f"• /exploit [url] — Full exploitation suite\n"
             f"• /sqli [url] — SQL injection test\n"
             f"• /xss [url] — XSS test\n"
-            f"• /lfi [url] — LFI test\n"
-            f"• /webscan [url] — vulnerability scan\n\n"
-            f"These commands use real tools and don't need AI credits."
+            f"• /webscan [url] — Vulnerability scan\n"
+            f"• /recon [domain] — Domain recon\n\n"
+            f"🔑 To fix permanently: add a FREE Gemini API key.\n"
+            f"Get one at: https://aistudio.google.com/apikey\n"
+            f"Then set GEMINI_API_KEY in Railway variables."
         )
+
+    def _cache_put(self, key: str, value: str):
+        """Add to cache, evict oldest if full."""
+        if len(self._cache) >= self._cache_max:
+            oldest = next(iter(self._cache))
+            del self._cache[oldest]
+        self._cache[key] = value
 
     def _boost_prompt(self, original: str) -> str:
         """Wrap the prompt to bypass safety filters on retry."""
@@ -266,6 +288,56 @@ class AIBrain:
         except Exception as e:
             logger.error(f"Groq error: {e}")
             return f"AI error: {str(e)}"
+
+    async def _call_gemini(self, prompt: str, system: str = None,
+                            history: List[Dict] = None, temperature: float = 0.3) -> str:
+        """Call Google Gemini — free tier: 15 RPM, 1M tokens/day."""
+        if not self.has_gemini:
+            return ""
+        if time.time() < self._gemini_rate_limited_until:
+            return ""
+
+        contents = []
+        if system:
+            contents.append({"role": "user", "parts": [{"text": f"[System] {system}"}]})
+            contents.append({"role": "model", "parts": [{"text": "Understood. I will follow these instructions."}]})
+        if history:
+            for msg in history[-6:]:
+                role = "model" if msg.get("role") == "assistant" else "user"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+        try:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{self.config.gemini_model}:generateContent?key={self.config.gemini_key}"
+            )
+            r = await self._client.post(url, json={
+                "contents": contents,
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": 4096,
+                    "topP": 0.9,
+                },
+            })
+            if r.status_code == 200:
+                data = r.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[0].get("text", "")
+                return ""
+            elif r.status_code == 429:
+                self._gemini_rate_limited_until = time.time() + 60
+                logger.warning("Gemini rate limited, cooldown 60s")
+                return ""
+            else:
+                logger.error(f"Gemini error {r.status_code}: {r.text[:300]}")
+                return ""
+        except Exception as e:
+            logger.error(f"Gemini error: {e}")
+            return ""
 
     async def _call_together(self, prompt: str, system: str = None,
                               history: List[Dict] = None, temperature: float = 0.7) -> str:
@@ -435,15 +507,15 @@ class AIBrain:
             if result and not _is_refusal(result):
                 return self._strip_disclaimers(result)
 
-        # Try Groq only if not rate-limited
-        if self._is_groq_available():
-            result = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed, 0.9)
+        # Try Gemini (free, generous limits)
+        if self.has_gemini and time.time() > self._gemini_rate_limited_until:
+            result = await self._call_gemini(boosted, UNCENSORED_SYSTEM, trimmed, 0.8)
             if result and not _is_refusal(result):
                 return self._strip_disclaimers(result)
 
-        # Try alt Groq models
+        # Try Groq only if not rate-limited
         if self._is_groq_available():
-            result = await self._call_groq_alt_model(message, UNCENSORED_SYSTEM, trimmed)
+            result = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed, 0.9)
             if result and not _is_refusal(result):
                 return self._strip_disclaimers(result)
 
