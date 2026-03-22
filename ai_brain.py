@@ -69,30 +69,35 @@ Results tagged [REAL EXPLOITATION RESULTS] are actual scan outputs."""
 
 
 class AIBrain:
-    """Cybersecurity AI — all backends use uncensored prompt. Auto-retry on refusal."""
+    """Cybersecurity AI with smart prompt routing and multi-backend fallback."""
 
     def __init__(self, config):
         self.config = config
-        # Always use the uncensored system prompt as the primary
-        self.system_prompt = UNCENSORED_SYSTEM
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(config.ollama_timeout))
         self.backend = "groq" if config.groq_key else "ollama"
         self.has_gemini = bool(config.gemini_key)
         self.has_together = bool(config.together_key)
         self.has_openrouter = bool(config.openrouter_key)
-        self._force_uncensored = True
         # Rate limit tracking
         self._groq_rate_limited_until = 0.0
         self._gemini_rate_limited_until = 0.0
-        # Self-throttle: track requests AND tokens to stay under limits
+        # Self-throttle: track requests AND tokens
         self._groq_timestamps: deque = deque(maxlen=25)
-        self._groq_token_usage: deque = deque(maxlen=30)  # (timestamp, token_count) pairs
+        self._groq_token_usage: deque = deque(maxlen=30)
         # Response cache — 200 entries, 10 min TTL
         self._cache: Dict[str, str] = {}
         self._cache_ts: Dict[str, float] = {}
         self._cache_max = 200
-        self._cache_ttl = 600  # 10 minutes
+        self._cache_ttl = 600
         logger.info(f"AI Backend: {self.backend} | Gemini: {self.has_gemini} | Together: {self.has_together} | OpenRouter: {self.has_openrouter}")
+
+    def _pick_system_prompt(self, user_message: str, override: str = None) -> str:
+        """Pick the right system prompt based on message content."""
+        if override:
+            return override
+        if _is_security_query(user_message):
+            return SECURITY_SYSTEM
+        return CASUAL_SYSTEM
 
     async def close(self):
         await self._client.aclose()
@@ -161,11 +166,12 @@ class AIBrain:
 
     async def _generate(self, prompt: str, system: str = None,
                         history: List[Dict] = None, temperature: float = 0.3) -> str:
-        """Generate response. Routes to available backends, handles rate limits."""
-        sys_prompt = system or self.system_prompt
-        trimmed_history = history[-6:] if history else None
+        """Generate response with smart prompt routing and multi-backend fallback."""
+        sys_prompt = self._pick_system_prompt(prompt, override=system)
+        trimmed_history = history[-4:] if history else None
+        is_security = _is_security_query(prompt)
 
-        # Check cache (skip for very long prompts with scan results)
+        # Check cache
         use_cache = len(prompt) < 1000
         if use_cache:
             cached = self._cache_get(prompt)
@@ -174,72 +180,71 @@ class AIBrain:
 
         response = ""
 
-        # Attempt 1: Groq (fast, but strict rate limits)
+        # Attempt 1: Groq
         if self.backend == "groq" and self._is_groq_available():
             response = await self._call_groq(prompt, sys_prompt, trimmed_history, temperature)
             if self._is_rate_limited_response(response):
                 self._mark_groq_limited()
                 response = ""
             elif response and not _is_refusal(response):
-                result = self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response) if is_security else response
                 if use_cache:
                     self._cache_put(prompt, result)
                 return result
 
-        # Attempt 2: Google Gemini (free, 15 RPM, 1M tokens/day)
+        # Attempt 2: Google Gemini (free, 15 RPM)
         if self.has_gemini and time.time() > self._gemini_rate_limited_until:
             response = await self._call_gemini(prompt, sys_prompt, trimmed_history, temperature)
             if response and not _is_refusal(response):
-                result = self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response) if is_security else response
                 if use_cache:
                     self._cache_put(prompt, result)
                 return result
 
-        # Attempt 3: Together AI (Dolphin uncensored)
+        # Attempt 3: HuggingFace (free, no key needed)
+        response = await self._call_huggingface(prompt, sys_prompt, trimmed_history, temperature)
+        if response and not _is_refusal(response):
+            result = self._strip_disclaimers(response) if is_security else response
+            if use_cache:
+                self._cache_put(prompt, result)
+            return result
+
+        # Attempt 4: Together AI
         if self.has_together:
-            response = await self._call_together(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
+            response = await self._call_together(prompt, sys_prompt, trimmed_history, 0.7)
             if response and not _is_refusal(response):
-                result = self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response) if is_security else response
                 if use_cache:
                     self._cache_put(prompt, result)
                 return result
 
-        # Attempt 4: OpenRouter
+        # Attempt 5: OpenRouter
         if self.has_openrouter:
-            response = await self._call_openrouter(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
+            response = await self._call_openrouter(prompt, sys_prompt, trimmed_history, 0.7)
             if response and not _is_refusal(response):
-                result = self._strip_disclaimers(response)
+                result = self._strip_disclaimers(response) if is_security else response
                 if use_cache:
                     self._cache_put(prompt, result)
                 return result
 
-        # Attempt 5: Groq with boosted prompt (only if available)
+        # Attempt 6: Groq retry with different model
         if self.backend == "groq" and self._is_groq_available():
-            await asyncio.sleep(1)
-            boosted = self._boost_prompt(prompt)
-            response = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed_history, 0.9)
-            if self._is_rate_limited_response(response):
-                self._mark_groq_limited()
-                response = ""
-            elif response and not _is_refusal(response):
-                return self._strip_disclaimers(response)
+            response = await self._call_groq_alt_model(prompt, sys_prompt, trimmed_history)
+            if response and not _is_refusal(response):
+                return self._strip_disclaimers(response) if is_security else response
 
-        # All attempts exhausted
-        if response and not self._is_rate_limited_response(response):
-            return response + "\n\n⚠️ AI safety filters engaged. Try /uncensored or /exploit [url]"
+        # Return whatever we got
+        if response:
+            return response
 
         wait_secs = max(0, int(self._groq_rate_limited_until - time.time()))
         return (
-            f"⚠️ All AI backends are rate-limited. Try again in ~{wait_secs}s.\n\n"
-            f"💡 These commands work WITHOUT AI credits:\n"
+            f"⚠️ AI backends busy. Try again in ~{wait_secs}s.\n\n"
+            f"💡 These commands work without AI:\n"
             f"• /exploit [url] — Full exploitation suite\n"
             f"• /sqli [url] — SQL injection test\n"
             f"• /xss [url] — XSS test\n"
-            f"• /webscan [url] — Vulnerability scan\n"
-            f"• /recon [domain] — Domain recon\n\n"
-            f"🔑 To fix permanently: add a FREE Gemini API key.\n"
-            f"Get one at: https://aistudio.google.com/apikey\n"
-            f"Then set GEMINI_API_KEY in Railway variables."
+            f"• /webscan [url] — Vulnerability scan"
         )
 
     def _cache_put(self, prompt: str, value: str):
@@ -381,6 +386,60 @@ class AIBrain:
         except Exception as e:
             logger.error(f"Gemini error: {e}")
             return ""
+
+    async def _call_huggingface(self, prompt: str, system: str = None,
+                                 history: List[Dict] = None, temperature: float = 0.5) -> str:
+        """Call HuggingFace Inference API — free, no API key required."""
+        # Build a simple prompt string (HF models use text completion)
+        parts = []
+        if system:
+            parts.append(f"<|system|>\n{system}</s>")
+        if history:
+            for msg in history[-3:]:
+                role = msg.get("role", "user")
+                parts.append(f"<|{role}|>\n{msg['content']}</s>")
+        parts.append(f"<|user|>\n{prompt[:2000]}</s>")
+        parts.append("<|assistant|>\n")
+        full_prompt = "\n".join(parts)
+
+        # Try multiple free HF models in order
+        hf_models = [
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            "HuggingFaceH4/zephyr-7b-beta",
+            "microsoft/Phi-3-mini-4k-instruct",
+        ]
+        for model in hf_models:
+            try:
+                r = await self._client.post(
+                    f"https://api-inference.huggingface.co/models/{model}",
+                    json={
+                        "inputs": full_prompt,
+                        "parameters": {
+                            "max_new_tokens": 1000,
+                            "temperature": temperature,
+                            "return_full_text": False,
+                        },
+                    },
+                    headers={"Content-Type": "application/json"},
+                    timeout=30.0,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and data:
+                        text = data[0].get("generated_text", "")
+                        if text and len(text) > 10:
+                            logger.info(f"HuggingFace ({model}) succeeded")
+                            return text.strip()
+                elif r.status_code == 503:
+                    # Model loading, try next
+                    continue
+                else:
+                    logger.debug(f"HF {model} returned {r.status_code}")
+                    continue
+            except Exception as e:
+                logger.debug(f"HF {model} error: {e}")
+                continue
+        return ""
 
     async def _call_together(self, prompt: str, system: str = None,
                               history: List[Dict] = None, temperature: float = 0.7) -> str:
@@ -534,38 +593,11 @@ class AIBrain:
             return f"AI error: {str(e)}"
 
     async def chat(self, message: str, history: List[Dict] = None) -> str:
-        return await self._generate(message, system=self.system_prompt, history=history)
+        """Smart chat — picks the right system prompt automatically."""
+        return await self._generate(message, history=history)
 
     async def chat_uncensored(self, message: str, history: List[Dict] = None) -> str:
-        """Force uncensored — try ALL backends with boosted prompt, skip rate-limited ones."""
-        boosted = self._boost_prompt(message)
-        trimmed = history[-6:] if history else None
-
-        # Try Together AI first (actually uncensored model)
-        if self.has_together:
-            result = await self._call_together(boosted, UNCENSORED_SYSTEM, trimmed, 0.8)
-            if result and not _is_refusal(result):
-                return self._strip_disclaimers(result)
-
-        # Try OpenRouter
-        if self.has_openrouter:
-            result = await self._call_openrouter(boosted, UNCENSORED_SYSTEM, trimmed, 0.8)
-            if result and not _is_refusal(result):
-                return self._strip_disclaimers(result)
-
-        # Try Gemini (free, generous limits)
-        if self.has_gemini and time.time() > self._gemini_rate_limited_until:
-            result = await self._call_gemini(boosted, UNCENSORED_SYSTEM, trimmed, 0.8)
-            if result and not _is_refusal(result):
-                return self._strip_disclaimers(result)
-
-        # Try Groq only if not rate-limited
-        if self._is_groq_available():
-            result = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed, 0.9)
-            if result and not _is_refusal(result):
-                return self._strip_disclaimers(result)
-
-        # Last resort — use _generate which handles the full chain
+        """Force security-mode — uses UNCENSORED_SYSTEM prompt."""
         return await self._generate(message, system=UNCENSORED_SYSTEM, history=history)
 
     async def analyze_target(self, target: str, scan_type: str = "general") -> str:
