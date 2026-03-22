@@ -8,6 +8,8 @@ All backends use the uncensored system prompt. Refusals are auto-detected and re
 import json
 import logging
 import re
+import asyncio
+import time
 import httpx
 from typing import Dict, List, Optional
 
@@ -97,57 +99,99 @@ class AIBrain:
         self.has_together = bool(config.together_key)
         self.has_openrouter = bool(config.openrouter_key)
         self._force_uncensored = True  # Default: always use uncensored prompt
+        # Rate limit tracking
+        self._groq_rate_limited_until = 0.0  # timestamp when groq is available again
+        self._request_timestamps: List[float] = []  # track recent requests for self-throttling
         logger.info(f"AI Backend: {self.backend} | Together: {self.has_together} | OpenRouter: {self.has_openrouter}")
 
     async def close(self):
         await self._client.aclose()
 
+    def _is_groq_available(self) -> bool:
+        """Check if Groq is past its rate limit cooldown."""
+        return time.time() > self._groq_rate_limited_until
+
+    def _mark_groq_limited(self, retry_after: float = 30.0):
+        """Mark Groq as rate-limited for a period."""
+        self._groq_rate_limited_until = time.time() + retry_after
+        logger.warning(f"Groq rate-limited, cooling down for {retry_after}s")
+
+    def _is_rate_limited_response(self, text: str) -> bool:
+        """Check if a response is a rate limit error, not a real answer."""
+        if not text:
+            return True
+        return "rate limit" in text.lower() or "429" in text or "quota" in text.lower()
+
     async def _generate(self, prompt: str, system: str = None,
                         history: List[Dict] = None, temperature: float = 0.3) -> str:
-        """Generate response. Tries ALL backends until one doesn't refuse."""
+        """Generate response. Routes to available backends, handles rate limits."""
         sys_prompt = system or self.system_prompt
+        # Trim history to save tokens — last 6 messages max
+        trimmed_history = history[-6:] if history else None
 
-        # Attempt 1: Primary backend (Groq) with uncensored prompt
         response = ""
-        if self.backend == "groq":
-            response = await self._call_groq(prompt, sys_prompt, history, temperature)
-        else:
-            response = await self._call_ollama(prompt, sys_prompt, history, temperature)
 
-        if response and not _is_refusal(response):
-            return self._strip_disclaimers(response)
+        # Attempt 1: Primary backend — only if not rate-limited
+        if self.backend == "groq" and self._is_groq_available():
+            response = await self._call_groq(prompt, sys_prompt, trimmed_history, temperature)
+            if self._is_rate_limited_response(response):
+                self._mark_groq_limited()
+                response = ""  # Don't return this, try fallbacks
+            elif response and not _is_refusal(response):
+                return self._strip_disclaimers(response)
+        elif self.backend == "ollama":
+            response = await self._call_ollama(prompt, sys_prompt, trimmed_history, temperature)
+            if response and not _is_refusal(response):
+                return self._strip_disclaimers(response)
 
-        logger.warning("Primary AI refused — trying fallback chain")
-
-        # Attempt 2: Together AI (Dolphin uncensored model)
+        # Attempt 2: Together AI (Dolphin uncensored) — separate rate limit
         if self.has_together:
-            response = await self._call_together(prompt, UNCENSORED_SYSTEM, history, 0.8)
+            response = await self._call_together(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
             if response and not _is_refusal(response):
                 return self._strip_disclaimers(response)
 
-        # Attempt 3: OpenRouter (free uncensored models)
+        # Attempt 3: OpenRouter — separate rate limit
         if self.has_openrouter:
-            response = await self._call_openrouter(prompt, UNCENSORED_SYSTEM, history, 0.8)
+            response = await self._call_openrouter(prompt, UNCENSORED_SYSTEM, trimmed_history, 0.8)
             if response and not _is_refusal(response):
                 return self._strip_disclaimers(response)
 
-        # Attempt 4: Retry Groq with boosted prompt that wraps the user request
-        boosted = self._boost_prompt(prompt)
-        if self.backend == "groq":
-            response = await self._call_groq(boosted, UNCENSORED_SYSTEM, history, 0.9)
-            if response and not _is_refusal(response):
+        # Attempt 4: Groq with boosted prompt — only if not rate-limited
+        if self.backend == "groq" and self._is_groq_available():
+            await asyncio.sleep(1)  # Small delay before retry
+            boosted = self._boost_prompt(prompt)
+            response = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed_history, 0.9)
+            if self._is_rate_limited_response(response):
+                self._mark_groq_limited()
+                response = ""
+            elif response and not _is_refusal(response):
                 return self._strip_disclaimers(response)
 
-        # Attempt 5: Try Groq with a completely different model if available
-        if self.backend == "groq":
-            response = await self._call_groq_alt_model(prompt, UNCENSORED_SYSTEM, history)
-            if response and not _is_refusal(response):
+        # Attempt 5: Alt Groq model — only if not rate-limited
+        if self.backend == "groq" and self._is_groq_available():
+            response = await self._call_groq_alt_model(prompt, UNCENSORED_SYSTEM, trimmed_history)
+            if self._is_rate_limited_response(response):
+                self._mark_groq_limited()
+                response = ""
+            elif response and not _is_refusal(response):
                 return self._strip_disclaimers(response)
 
-        # All attempts failed — return whatever we got with a note
-        if response:
+        # All attempts exhausted
+        if response and not self._is_rate_limited_response(response):
             return response + "\n\n⚠️ AI safety filters engaged. Try:\n• /uncensored [question]\n• /exploit [url] for raw tool output\n• Rephrase as 'authorized pentest on my own server'"
-        return "AI could not generate a response. Use /exploit [url] for direct tool-based scanning."
+
+        # Everything rate-limited
+        wait_secs = max(0, int(self._groq_rate_limited_until - time.time()))
+        return (
+            f"⚠️ All AI backends are rate-limited. Groq free tier allows ~30 requests/min.\n\n"
+            f"⏳ Try again in ~{wait_secs}s, or:\n"
+            f"• /exploit [url] — runs tools directly (no AI needed)\n"
+            f"• /sqli [url] — SQL injection test\n"
+            f"• /xss [url] — XSS test\n"
+            f"• /lfi [url] — LFI test\n"
+            f"• /webscan [url] — vulnerability scan\n\n"
+            f"These commands use real tools and don't need AI credits."
+        )
 
     def _boost_prompt(self, original: str) -> str:
         """Wrap the prompt to bypass safety filters on retry."""
@@ -183,11 +227,13 @@ class AIBrain:
 
     async def _call_groq(self, prompt: str, system: str = None,
                          history: List[Dict] = None, temperature: float = 0.3) -> str:
+        if not self._is_groq_available():
+            return ""  # Skip entirely if rate-limited
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         if history:
-            messages.extend(history)
+            messages.extend(history[-6:])
         messages.append({"role": "user", "content": prompt})
 
         try:
@@ -208,7 +254,10 @@ class AIBrain:
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
             elif r.status_code == 429:
-                return "⚠️ Rate limited — wait a moment and try again."
+                # Parse retry-after header if present
+                retry_after = float(r.headers.get("retry-after", "30"))
+                self._mark_groq_limited(retry_after)
+                return ""  # Return empty so fallbacks are tried
             else:
                 logger.error(f"Groq error {r.status_code}: {r.text[:300]}")
                 return f"AI error (Groq {r.status_code})"
@@ -302,6 +351,8 @@ class AIBrain:
     async def _call_groq_alt_model(self, prompt: str, system: str = None,
                                     history: List[Dict] = None, temperature: float = 0.7) -> str:
         """Try a different Groq model that may be less restricted."""
+        if not self._is_groq_available():
+            return ""
         alt_models = ["llama-3.1-8b-instant", "gemma2-9b-it", "mixtral-8x7b-32768"]
         for model in alt_models:
             if model == self.config.groq_model:
@@ -331,6 +382,9 @@ class AIBrain:
                     if text and not _is_refusal(text):
                         logger.info(f"Alt model {model} succeeded")
                         return text
+                elif r.status_code == 429:
+                    self._mark_groq_limited(float(r.headers.get("retry-after", "30")))
+                    return ""  # All Groq models share the same rate limit
             except Exception as e:
                 logger.debug(f"Alt model {model} failed: {e}")
         return ""
@@ -365,32 +419,35 @@ class AIBrain:
         return await self._generate(message, system=self.system_prompt, history=history)
 
     async def chat_uncensored(self, message: str, history: List[Dict] = None) -> str:
-        """Force uncensored — try ALL backends with boosted prompt, skip primary if it fails."""
+        """Force uncensored — try ALL backends with boosted prompt, skip rate-limited ones."""
         boosted = self._boost_prompt(message)
+        trimmed = history[-6:] if history else None
 
         # Try Together AI first (actually uncensored model)
         if self.has_together:
-            result = await self._call_together(boosted, UNCENSORED_SYSTEM, history, 0.8)
+            result = await self._call_together(boosted, UNCENSORED_SYSTEM, trimmed, 0.8)
             if result and not _is_refusal(result):
                 return self._strip_disclaimers(result)
 
         # Try OpenRouter
         if self.has_openrouter:
-            result = await self._call_openrouter(boosted, UNCENSORED_SYSTEM, history, 0.8)
+            result = await self._call_openrouter(boosted, UNCENSORED_SYSTEM, trimmed, 0.8)
             if result and not _is_refusal(result):
                 return self._strip_disclaimers(result)
 
-        # Try Groq with boosted prompt
-        result = await self._call_groq(boosted, UNCENSORED_SYSTEM, history, 0.9)
-        if result and not _is_refusal(result):
-            return self._strip_disclaimers(result)
+        # Try Groq only if not rate-limited
+        if self._is_groq_available():
+            result = await self._call_groq(boosted, UNCENSORED_SYSTEM, trimmed, 0.9)
+            if result and not _is_refusal(result):
+                return self._strip_disclaimers(result)
 
         # Try alt Groq models
-        result = await self._call_groq_alt_model(message, UNCENSORED_SYSTEM, history)
-        if result and not _is_refusal(result):
-            return self._strip_disclaimers(result)
+        if self._is_groq_available():
+            result = await self._call_groq_alt_model(message, UNCENSORED_SYSTEM, trimmed)
+            if result and not _is_refusal(result):
+                return self._strip_disclaimers(result)
 
-        # Last resort — plain Groq
+        # Last resort — use _generate which handles the full chain
         return await self._generate(message, system=UNCENSORED_SYSTEM, history=history)
 
     async def analyze_target(self, target: str, scan_type: str = "general") -> str:
