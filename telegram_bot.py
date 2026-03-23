@@ -31,9 +31,10 @@ from flipper_tools import (
 )
 from phone_tools import (
     phone_setup_guide, wifi_deauth_script, wifi_evil_twin_script,
-    nfc_phone_script, ir_blaster_script, network_scan_script, arp_spoof_script,
-    wifi_scan_script, packet_sniffer_script, ble_scan_script, phone_jammer_info,
+    nfc_phone_script, ir_blaster_script, arp_spoof_script,
+    packet_sniffer_script, ble_scan_script, phone_jammer_info,
     phone_full_toolkit, ish_setup_script, ssh_remote_tools,
+    phone_exec, wifi_scan_script,
 )
 
 logger = logging.getLogger(__name__)
@@ -521,7 +522,10 @@ class TelegramBot:
     async def cmd_phonenet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
             return
-        await self._send(update, f"<pre>{esc(network_scan_script())}</pre>")
+        args = " ".join(context.args) if context.args else ""
+        await self._send(update, "Scanning...")
+        result = await phone_exec(args)
+        await self._send(update, f"<pre>{esc(result[:3500])}</pre>")
 
     async def cmd_phonemitm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -531,7 +535,13 @@ class TelegramBot:
     async def cmd_phonescan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
             return
-        await self._send(update, f"<pre>{esc(wifi_scan_script())}</pre>")
+        args = " ".join(context.args) if context.args else ""
+        if args:
+            await self._send(update, "Scanning...")
+            result = await phone_exec(f"scan {args}")
+            await self._send(update, f"<pre>{esc(result[:3500])}</pre>")
+        else:
+            await self._send(update, f"<pre>{esc(wifi_scan_script())}</pre>")
 
     async def cmd_phonesniff(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):

