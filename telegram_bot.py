@@ -1,6 +1,7 @@
 """Pocket Flipper - Telegram Bot. Pure Flipper Zero + hardware hacking."""
 
 import asyncio
+import io
 import logging
 import os
 import re
@@ -147,6 +148,12 @@ class TelegramBot:
             except Exception:
                 await update.message.reply_text(chunk, parse_mode=None)
 
+    async def _send_file(self, update: Update, content: str, filename: str, caption: str = ""):
+        """Send content as a downloadable file via Telegram."""
+        buf = io.BytesIO(content.encode())
+        buf.name = filename
+        await update.message.reply_document(document=buf, filename=filename, caption=caption[:1024] if caption else None)
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
             return
@@ -233,12 +240,12 @@ class TelegramBot:
                 if tname.replace("_", " ") in args.lower() or tname in args.lower():
                     script = generate_duckyscript(tname)
                     info = BADUSB_TEMPLATES[tname]
-                    await self._send(update, f"<b>{esc(info['name'])}</b>\n<pre>{esc(script)}</pre>")
+                    await self._send_file(update, script, f"{tname}.txt", f"BadUSB: {info['name']}\nSave to: Flipper SD > badusb/{tname}.txt")
                     return
             response = await self.ai.flipper_help(f"BadUSB payload for: {args}")
             await self._send(update, esc(response))
         else:
-            await self._send(update, f"<b>BADUSB PAYLOADS</b>\n<pre>{esc(list_badusb_payloads())}</pre>")
+            await self._send(update, f"<b>BADUSB PAYLOADS</b>\n<pre>{esc(list_badusb_payloads())}</pre>\n\nUsage: /badusb reverse_shell")
 
     async def cmd_rfid(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -247,11 +254,12 @@ class TelegramBot:
         uid_match = re.search(r"([0-9A-Fa-f]{2}[:- ]){3,}[0-9A-Fa-f]{2}", args)
         if uid_match:
             uid = uid_match.group(0)
-            result = calc_uid_checksum(uid) + "\n" + generate_rfid_file(uid)
-            await self._send(update, f"<pre>{esc(result)}</pre>")
+            rfid_content = generate_rfid_file(uid)
+            await self._send_file(update, rfid_content, f"rfid_{uid.replace(' ','').replace(':','')}.rfid", f"RFID file for UID: {uid}\nSave to: Flipper SD > lfrfid/")
+            await self._send(update, f"<pre>{esc(calc_uid_checksum(uid))}</pre>")
         else:
             proto = args.strip() if args else ""
-            await self._send(update, f"<pre>{esc(rfid_info(proto))}</pre>")
+            await self._send(update, f"<pre>{esc(rfid_info(proto))}</pre>\n\nUsage: /rfid DE AD BE EF 01")
 
     async def cmd_nfc(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -261,13 +269,13 @@ class TelegramBot:
         if uid_match:
             uid = uid_match.group(0)
             nfc = generate_nfc_file(uid)
-            await self._send(update, f"<pre>{esc(nfc[:3000])}</pre>")
+            await self._send_file(update, nfc, f"nfc_{uid.replace(' ','').replace(':','')}.nfc", f"NFC file for UID: {uid}\nSave to: Flipper SD > nfc/")
         elif "key" in args.lower() or "mifare" in args.lower():
             await self._send(update, f"<pre>{esc(mifare_keys())}</pre>")
         elif "fuzz" in args.lower():
             await self._send(update, f"<pre>{esc(nfc_fuzzing())}</pre>")
         else:
-            await self._send(update, f"<pre>{esc(rfid_info('mifare_classic'))}</pre>")
+            await self._send(update, f"<pre>{esc(rfid_info('mifare_classic'))}</pre>\n\nUsage: /nfc DE AD BE EF")
 
     async def cmd_subghz(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -280,9 +288,13 @@ class TelegramBot:
                     proto = p
                     break
             await self._send(update, f"<pre>{esc(subghz_bruteforce(proto))}</pre>")
-        else:
-            proto = args.strip() if args else ""
+        elif args:
+            proto = args.strip()
+            sub_file = generate_sub_file(proto)
+            await self._send_file(update, sub_file, f"subghz_{proto}.sub", f"Sub-GHz file: {proto}\nSave to: Flipper SD > subghz/")
             await self._send(update, f"<pre>{esc(subghz_info(proto))}</pre>")
+        else:
+            await self._send(update, f"<pre>{esc(subghz_info(''))}</pre>\n\nUsage: /subghz princeton  or  /subghz came")
 
     async def cmd_ir(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -297,9 +309,9 @@ class TelegramBot:
                     device = d
                     break
             ir_file = generate_ir_file(device)
-            await self._send(update, f"<pre>{esc(ir_file[:3000])}</pre>")
+            await self._send_file(update, ir_file, f"{device}_remote.ir", f"IR file: {device}\nSave to: Flipper SD > infrared/")
         else:
-            await self._send(update, f"<pre>{esc(ir_protocols())}</pre>")
+            await self._send(update, f"<pre>{esc(ir_protocols())}</pre>\n\nUsage: /ir tv  or  /ir ac  or  /ir projector")
 
     async def cmd_deauth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -360,9 +372,10 @@ class TelegramBot:
         uid_match = re.search(r"([0-9A-Fa-f]{2}[:- ]){5,}[0-9A-Fa-f]{2}", args)
         if uid_match:
             uid = uid_match.group(0)
-            await self._send(update, f"<pre>{esc(generate_ibutton_file(uid))}</pre>")
+            ibtn = generate_ibutton_file(uid)
+            await self._send_file(update, ibtn, f"ibutton_{uid.replace(' ','').replace(':','')}.ibtn", f"iButton file for UID: {uid}\nSave to: Flipper SD > ibutton/")
         else:
-            await self._send(update, f"<pre>{esc(ibutton_info())}</pre>")
+            await self._send(update, f"<pre>{esc(ibutton_info())}</pre>\n\nUsage: /ibutton 01 02 03 04 05 06 07 08")
 
     async def cmd_firmware(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -395,24 +408,29 @@ class TelegramBot:
             return
         args = " ".join(context.args) if context.args else ""
         if not args:
-            await self._send(update, f"<pre>{esc(flipper_file_structure())}</pre>")
+            await self._send(update, f"<pre>{esc(flipper_file_structure())}</pre>\n\nUsage: /genfile sub  /genfile nfc  /genfile ir  /genfile rfid  /genfile ibutton  /genfile badusb")
             return
         file_type = args.split()[0].lower()
         if file_type in ("sub", "subghz"):
             result = generate_sub_file("princeton")
+            await self._send_file(update, result, "garage_433.sub", "Sub-GHz file (Princeton 433MHz)\nSave to: Flipper SD > subghz/")
         elif file_type in ("nfc",):
             result = generate_nfc_file("DE AD BE EF")
+            await self._send_file(update, result, "sample.nfc", "NFC file (MIFARE Classic)\nSave to: Flipper SD > nfc/")
         elif file_type in ("rfid",):
             result = generate_rfid_file("DE AD BE EF 01")
+            await self._send_file(update, result, "sample.rfid", "RFID file (EM4100)\nSave to: Flipper SD > lfrfid/")
         elif file_type in ("ir", "infrared"):
             result = generate_ir_file("tv")
+            await self._send_file(update, result, "tv_remote.ir", "IR remote file (Samsung/LG/Sony)\nSave to: Flipper SD > infrared/")
         elif file_type in ("ibutton",):
             result = generate_ibutton_file("01 02 03 04 05 06 07 08")
+            await self._send_file(update, result, "sample.ibtn", "iButton file (Dallas)\nSave to: Flipper SD > ibutton/")
         elif file_type in ("badusb", "ducky"):
             result = generate_duckyscript("reverse_shell_windows")
+            await self._send_file(update, result, "payload.txt", "BadUSB DuckyScript\nSave to: Flipper SD > badusb/")
         else:
-            result = flipper_file_structure()
-        await self._send(update, f"<pre>{esc(result[:3500])}</pre>")
+            await self._send(update, f"<pre>{esc(flipper_file_structure())}</pre>")
 
     async def cmd_marauder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
@@ -466,9 +484,15 @@ class TelegramBot:
         if args:
             for make in CAR_KEY_DB:
                 if make in args or make.replace("_", " ") in args:
-                    await self._send(update, f"<pre>{esc(car_key_lookup(make))}</pre>")
+                    info = car_key_lookup(make)
+                    db = CAR_KEY_DB[make]
+                    freq = str(db.get("freq", 433.92))
+                    proto = db.get("protocol", "princeton")
+                    sub = generate_sub_file(proto, frequency=freq)
+                    await self._send_file(update, sub, f"{make}_unlock.sub", f"{make.upper()} - {freq} MHz\nSave to: Flipper SD > subghz/\nOpen: Sub-GHz > Saved > {make}_unlock")
+                    await self._send(update, f"<pre>{esc(info)}</pre>")
                     return
-        await self._send(update, f"<pre>{esc(car_key_list())}</pre>")
+        await self._send(update, f"<pre>{esc(car_key_list())}</pre>\n\nUsage: /carscan toyota  or  /carscan honda")
 
     async def cmd_signal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update.effective_user.id):
